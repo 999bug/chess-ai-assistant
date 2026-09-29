@@ -67,6 +67,9 @@ OUT_JSON = os.path.join(OUT_DIR, "suggestion.json")
 # 被 .gitignore 挡着，配置放里面换台机器就丢了。
 TUNE_PATH = os.path.join(ROOT, "config", "tune.json")
 TUNE_LEGACY = os.path.join(OUT_DIR, "tune.json")   # 老位置，仅用于一次性迁移
+# 手工重置信号：浮窗上的「重开一局」按钮（或直接建这个文件）写了它就重置。
+# 放 out/ 而不是 config/：这是一次性的运行期产物，不是要入库的配置。
+RESTART_FLAG = os.path.join(OUT_DIR, "restart.flag")
 
 # 整板缩略图：45x50，每格约 5px。够看出棋子动没动，算起来又便宜（0.9ms/帧）。
 SIG_SIZE = (45, 50)
@@ -98,6 +101,50 @@ def write(payload):
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     os.replace(tmp, OUT_JSON)  # 原子替换，读的一方不会读到半个文件
+
+
+# 子力数允许的抖动量：识别偶尔多认/少认一两个子，不该当成走了棋。
+POWER_DROP_TOLERANCE = 2
+
+
+def power_drop(last_count, n_now):
+    """子力骤降的告警文案，没有就返回空串。
+
+    为什么要这条：一步最多吃掉一个子，采样间隔又只有几百毫秒，子力不该掉一大截。
+    实测过识别从 32 子掉到 22 子（马炮整批漏检）却仍然"结构合法"，
+    引擎基于残缺局面给了荒唐建议。这一条专门堵这个洞。
+
+    **只判"降"，不判"升"**（2026-09-29 修）：子力变多只可能是新开一局，
+    或者识别把空位认成了子——前者无害，后者由静态校验的子力上限兜住。
+    旧实现是在这里顺手把基线改成当前值的（"子力变多当作新开一局"），
+    于是坏帧反而能污染基线：识别崩掉时会读出 42 子（棋盘上限 32），
+    基线一变成 42，之后每一帧正常盘面都被判「42 -> 32 骤降，疑似漏检」，
+    守门员永久不放行——助手连一局都跑不完。日志见 log/auto_coach-*.log。
+    所以基线只由**过了守门员的帧**来立（见主循环），这个函数纯粹只读。
+    """
+    if last_count is None or last_count - n_now <= POWER_DROP_TOLERANCE:
+        return ""
+    return "子力 {} -> {} 骤降，疑似漏检".format(last_count, n_now)
+
+
+def restart_requested(path=RESTART_FLAG):
+    """有人请求「重开一局」吗？有就把信号消费掉（删文件）并返回 True。
+
+    为什么要跨进程走文件：浮窗借的是系统 Python、识别跑在隔离环境，
+    两个进程不共享内存，只能靠文件通信（out/suggestion.json 也是这么传的）。
+
+    为什么要删掉而不是一直读：这是一次性动作。文件留着的话每一轮都会重置，
+    等于永远停在"刚重新开始"，反而再也不会出招了。
+    """
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        return False
+    except OSError as e:
+        # 删不掉（被占用之类）就当没收到：留着下一轮再试，总比反复重置强
+        print("  重置信号处理失败: {}".format(e))
+        return False
+    return True
 
 
 class Reporter:
@@ -567,6 +614,31 @@ def main():
                 log.info("tune.json 已热更新: {}".format(
                     json.dumps(tune.data, ensure_ascii=False)))
 
+            # ---- 手工重置：浮窗「重开一局」按钮，或直接建 out/restart.flag ----
+            # 一局下完之后，管道里攒着上一局的着法历史、轮次和子力基线。
+            # 靠差分自己走出来只有一条路——盘面正好回到标准 32 子开局
+            # （rules.explain_change 返回 reset）。可 JJ象棋 有「棋力评测」
+            # 这类非标准开局模式，认不出 reset，于是轮次会一直继承上一局
+            # （常见症状：卡在"轮对方走"再也不出招）。
+            # 所以给一个不看盘面、直接把状态清干净的入口。
+            #
+            # 注意 sig_prev 是**有意不清**的：留着它，画面没变时下一轮就不会
+            # 走进"画面变化中…"分支，"已重置"这句状态才能在浮窗上多停一会儿。
+            # sig_done 必须清，否则重置后这张画面会被当成"已经定过案"而跳过。
+            if restart_requested():
+                track = None          # 着法历史 + 轮次，会重新走"首帧"那套推断
+                last_board = None     # 差分基准
+                last_key = None       # 去重用的标签快照
+                last_count = None     # 子力基线
+                last_move = None      # 浮窗上还挂着上一局的建议，一起撤掉
+                bad_n = 0
+                sig_done = None
+                still_n = 0
+                last_ts = time.time()
+                text = "已重置：清空上一局的记忆，按当前局面重新识别"
+                rep.status(text)     # 写 out/suggestion.json 给浮窗，顺带记一条日志
+                print("  " + text)
+
             interval = max(0.02, float(tune["interval"]))
             stable = max(1, int(tune["stable"]))
 
@@ -649,15 +721,13 @@ def main():
             ok, problems = rules.validate(board)
 
             # 时序连续性：一步最多吃掉一个子，子力数不该骤降。
-            # 实测过识别从 32 子掉到 22 子（马炮整批漏检）却仍然"结构合法"，
-            # 于是引擎基于残缺局面给了荒唐建议。这一条专门堵这个洞。
-            n_now = len(occ)
-            if last_count is not None:
-                if n_now > last_count + 2:
-                    last_count = n_now          # 子力变多，当作新开一局
-                elif last_count - n_now > 2:
-                    problems.append(
-                        "子力 {} -> {} 骤降，疑似漏检".format(last_count, n_now))
+            # 判定本身在 power_drop() 里（只判降不判升，理由见那里的注释），
+            # 关键是**基线只在下面"守门员过了"之后才更新**——绝不能在验之前改，
+            # 否则识别崩掉时读出的坏帧（42 子）会把基线顶上去，之后每一帧
+            # 正常盘面都被判「骤降」而永久卡住。
+            drop = power_drop(last_count, len(occ))
+            if drop:
+                problems.append(drop)
             if problems:
                 ok = False
 
@@ -673,12 +743,17 @@ def main():
                         "；".join(problems), fen_now))
                 print("  校验未过: " + "；".join(problems[:3]))
                 if bad_n >= 3:
-                    last_key = None   # 放手，等下一轮重新确认
+                    # 连着几帧都说不通，就别再拿旧基线卡着新画面不放了：
+                    # last_count 也一起清掉，让下一帧重新立基线。
+                    # 只清 last_key 的话，识别崩过一阵又恢复时，
+                    # 恢复后的第一帧仍会被「骤降」判死，白等一轮。
+                    last_key = None
+                    last_count = None
                     bad_n = 0
                 time.sleep(interval)
                 continue
             bad_n = 0
-            last_count = len(occ)
+            last_count = len(occ)      # 子力基线只由过了守门员的帧来立
 
             # ---- 差分：解释得了就是正常推进，顺带维护着法历史 ----
             my_letter = SIDE_LETTER.get(args.side, "R")
