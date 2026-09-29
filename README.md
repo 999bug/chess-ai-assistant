@@ -19,7 +19,7 @@
 
 ## 识别准确率
 
-对照 `tests/gt/recognition_gt.json`（人工逐格核对过的真值）跑 `python eval_recognition.py`：
+对照 `tests/gt/recognition_gt.json`（人工逐格核对过的真值）跑 `python tools/eval_recognition.py`：
 
 | 方案 | 逐格准确率 | 子力召回 | 幻影子 | 整盘全对 | 单帧耗时 |
 |---|---|---|---|---|---|
@@ -43,7 +43,7 @@
 python -m pip install opencv-python numpy mss onnxruntime
 ```
 
-需要跑界面文字 OCR（`ocrutil.py` / `notation.py`）时再加 `rapidocr_onnxruntime`。
+需要跑界面文字 OCR（`tools/ocrutil.py` / `tools/notation.py`）时再加 `rapidocr_onnxruntime`。
 
 ### 2. 下载引擎（不入库）
 
@@ -52,12 +52,12 @@ gh release download -R official-pikafish/Pikafish -D engine
 ```
 
 解压下载到的 `.7z`，把 Windows 版可执行文件和 `pikafish.nnue` 放进 `engine/`，
-可执行文件改名为 `pikafish.exe`（`coach.py` 按这个名字找）。
+可执行文件改名为 `pikafish.exe`（`app/coach.py` 按这个名字找）。
 
 ### 3. 下载识别模型（不入库）
 
 ```bash
-python download_models.py
+python tools/download_models.py
 ```
 
 约 31MB，来自 HuggingFace Space；直连不通时脚本会自动换 hf-mirror 镜像。
@@ -69,9 +69,9 @@ python download_models.py
 把目标程序摆到屏幕上，然后：
 
 ```bash
-python calibrate.py            # 默认找标题含「JJ象棋」的窗口
-python calibrate.py --show     # 顺带输出交叉点可视化图，方便肉眼验收
-python calibrate.py --title 你的窗口标题
+python tools/calibrate.py            # 默认找标题含「JJ象棋」的窗口
+python tools/calibrate.py --show     # 顺带输出交叉点可视化图，方便肉眼验收
+python tools/calibrate.py --title 你的窗口标题
 ```
 
 结果写进 `config/layout.json`，坐标全部相对窗口左上角，窗口缩放时按比例换算。
@@ -90,50 +90,81 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 也可以手动开两个终端：
 
 ```bash
-python auto_coach.py --side red --depth 14
-python hud.py
+python app/auto_coach.py --side red     # 识别 + 引擎
+python app/hud.py                       # 浮窗
 ```
 
 ## 命令行
 
+`app/` 下是运行时核心，`tools/` 下是辅助与一次性脚本。
+
 | 脚本 | 说明 |
 |---|---|
-| `auto_coach.py` | 主循环：截图 → 识别 → 校验 → 出招，结果写 `out/suggestion.json` |
-| `hud.py` | 置顶浮窗，读 `out/suggestion.json` |
-| `eval_recognition.py` | 识别准确率评测 |
-| `calibrate.py` | 棋盘坐标标定 |
-| `download_models.py` | 拉取 ONNX 权重 |
-| `watch_board.py` | 实时整盘监测（早期版本，仍在用霍夫圆） |
-| `grid_classify.py` | 旧的逐格模板匹配后端 |
-| `probe.py` | 窗口枚举与截图方式的探测工具 |
+| `app/auto_coach.py` | 主循环：截图 → 识别 → 校验 → 出招，结果写 `out/suggestion.json` |
+| `app/hud.py` | 置顶浮窗，读 `out/suggestion.json` |
+| `app/coach.py` | 单次抓图出建议（调试用），也提供引擎封装 |
+| `tools/eval_recognition.py` | 识别准确率评测 |
+| `tools/calibrate.py` | 棋盘坐标标定 |
+| `tools/download_models.py` | 拉取 ONNX 权重 |
+| `tools/probe.py` | 窗口枚举与截图方式的探测工具 |
+| `tools/watch_board.py` | 早期实现：实时整盘监测（霍夫圆，已被 `auto_coach` 取代） |
+| `tools/board_read.py` | 早期实现：霍夫圆 + OCR 读盘 |
 
 常用参数：
 
 ```bash
-python auto_coach.py --side black --depth 18 --interval 1.0 --stable 3
-python auto_coach.py --backend template     # 回退到旧的模板匹配后端
-python eval_recognition.py --backend both --verbose
-python download_models.py --force
+python app/auto_coach.py --side black --movetime 1500     # 引擎想更强
+python app/auto_coach.py --backend template               # 回退到旧的模板匹配后端
+python tools/eval_recognition.py --backend both --verbose
+python tools/download_models.py --force
 ```
 
-`--stable` 是「连续多少帧一致才认账」，用于滤掉走子动画和加载中的中间态，默认 3。
+**运行期参数在 `config/tune.json`**——改了保存即生效，不用重启进程
+（引擎的 Hash/Threads 走 `setoption` 热改，思考时间本来就是每步 `go` 的参数）。
+字段含义、取值范围和推荐值见 [docs/CONFIG.md](docs/CONFIG.md)。
+`start.ps1` 的同名参数只是启动时覆盖一次，日常调整直接改文件更省事。
 
 ## 目录结构
 
 ```
-auto_coach.py         主循环：抓图 → 识别 → 校验 → 出招
-board_onnx.py         整板识别适配层（四点拉正 → ONNX 推理）
-rules.py              规则校验：静态局面 + 相邻帧着法差分
-coach.py              引擎封装（UCI）+ 中文记谱
-board_read.py         按标定网格裁棋盘
-hud.py                置顶浮窗
-calibrate.py          棋盘坐标标定
-config/layout.json    棋盘坐标与标定信息
-docs/PROGRESS.md      开发进度、实测数据与设计取舍
-tests/gt/             人工核对过的识别真值
+start.ps1             一键启动（识别进程 + 置顶浮窗）
+
+app/                  运行时核心
+  auto_coach.py         主循环：抓图 → 识别 → 校验 → 出招
+  coach.py              引擎封装（UCI）+ FEN + 中文记谱
+  rules.py              规则校验：静态局面 + 相邻帧着法差分
+  board_onnx.py         整板识别适配层（四点拉正 → ONNX 推理）
+  grid_classify.py      旧的逐格模板匹配后端（--backend template 回退用）
+  hud.py                置顶浮窗
+
+tools/                辅助与一次性脚本
+  calibrate.py          棋盘坐标标定（产出 config/layout.json）
+  probe.py              窗口枚举与截图方式探测
+  eval_recognition.py   识别准确率评测
+  download_models.py    拉取 ONNX 权重
+  board_read.py         早期实现：霍夫圆 + OCR 读盘
+  grid_read.py          早期实现：逐格模板分类
+  watch_board.py        早期实现：实时整盘监测（霍夫圆）
+  watch_notation.py     棋谱区实时检测（OCR）
+  notation.py           中文记谱解析
+  ocrutil.py            RapidOCR 封装
+
+config/
+  layout.json           棋盘坐标（标定产物，入库）
+  tune.json             运行期参数（入库，说明见 docs/CONFIG.md）
+
+docs/
+  PROGRESS.md           开发进度、实测数据与设计取舍
+  CONFIG.md             tune.json 字段说明
+  index.html            执红开局武器库（单页展示）
+
+tests/
+  run_all.py            一次跑完全部测试
+  gt/                   人工核对过的识别真值
+
 engine/               引擎二进制与 NNUE（自行下载，不入库）
 models/               ONNX 权重（自行下载，不入库）
-out/                  运行产物：截图、日志、建议
+out/                  运行产物：截图、日志、建议（不入库）
 ```
 
 ## 设计取舍
@@ -153,7 +184,7 @@ out/                  运行产物：截图、日志、建议
 - 棋盘坐标是一次性标定写死的，没有逐帧复核。实测格点与棋子圆心有
   dx +2~+7px 的系统偏差；整板分类对这个量级不敏感，但窗口缩放较大时会退化。
 - 真值只有 2 帧，中局、残局、走子动画帧的覆盖不足。
-- 棋谱区坐标尚未标定，`notation.py` 的中文记谱解析暂时没有输入源。
+- 棋谱区坐标尚未标定，`tools/notation.py` 的中文记谱解析暂时没有输入源。
 - 只给建议，不自动落子。
 - 目标窗口必须持续可见，最小化或容器失焦后取不到画面。
 
@@ -162,7 +193,7 @@ out/                  运行产物：截图、日志、建议
 | 组件 | 用途 | 许可 |
 |---|---|---|
 | [Pikafish](https://github.com/official-pikafish/Pikafish) | 象棋引擎 | GPL-3.0，本项目不分发其二进制 |
-| 整板识别 ONNX 权重 | 棋子分类 | Apache-2.0，出处见 `download_models.py` |
+| 整板识别 ONNX 权重 | 棋子分类 | Apache-2.0，出处见 `tools/download_models.py` |
 | [RapidOCR](https://github.com/RapidAI/RapidOCR) | 界面文字 OCR | Apache-2.0 |
 
 本项目仅用于学习与自我复盘。请自行确认目标程序的服务条款。

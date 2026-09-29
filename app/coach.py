@@ -33,7 +33,8 @@ import grid_classify as G
 import rules
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ENGINE = os.path.join(HERE, "engine", "pikafish.exe")
+ROOT = os.path.dirname(HERE)          # 代码在 app/ 下，上一级才是项目根
+ENGINE = os.path.join(ROOT, "engine", "pikafish.exe")
 
 
 def default_threads():
@@ -296,7 +297,7 @@ def main():
         pts = [[(p[0] * sx, p[1] * sy) for p in row] for row in pts]
         cell = cell * ((sx + sy) / 2)
         img = G.grab((x, y, ww, hh))
-        img_path = os.path.join(HERE, "out", f"coach_{time.strftime('%H%M%S')}.png")
+        img_path = os.path.join(ROOT, "out", f"coach_{time.strftime('%H%M%S')}.png")
         img.save(img_path)
 
     if args.backend == "onnx":

@@ -29,7 +29,8 @@ if getattr(sys.stdout, "encoding", None) != "utf-8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CFG = os.path.join(HERE, "config", "layout.json")
+ROOT = os.path.dirname(HERE)          # 代码在 app/ 下，上一级才是项目根
+CFG = os.path.join(ROOT, "config", "layout.json")
 
 # 开局编制：每种子力的数量上限。识别出的数量超过它，必定是认错了。
 LIMIT = {

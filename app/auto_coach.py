@@ -58,9 +58,13 @@ import rules
 from coach import Engine, board_to_fen, move_to_chinese, move_to_ucci, parse_score
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT_DIR = os.path.join(HERE, "out")
+ROOT = os.path.dirname(HERE)          # 代码在 app/ 下，上一级才是项目根
+OUT_DIR = os.path.join(ROOT, "out")
 OUT_JSON = os.path.join(OUT_DIR, "suggestion.json")
-OUT_TUNE = os.path.join(OUT_DIR, "tune.json")
+# 配置文件放 config/ 而不是 out/：out/ 整个目录是运行期产物（截图、建议），
+# 被 .gitignore 挡着，配置放里面换台机器就丢了。
+TUNE_PATH = os.path.join(ROOT, "config", "tune.json")
+TUNE_LEGACY = os.path.join(OUT_DIR, "tune.json")   # 老位置，仅用于一次性迁移
 
 # 整板缩略图：45x50，每格约 5px。够看出棋子动没动，算起来又便宜（0.9ms/帧）。
 SIG_SIZE = (45, 50)
@@ -171,13 +175,47 @@ class Tune:
         "max_steps": 3,
     }
 
-    def __init__(self, path):
+    def __init__(self, path=TUNE_PATH, legacy=TUNE_LEGACY):
         self.path = path
+        self.legacy = legacy
         self.mtime = None
         self.data = dict(self.DEFAULTS)
-        if not os.path.exists(path):
+        if not os.path.exists(self.path):
+            self._migrate_legacy()
+        if not os.path.exists(self.path):
             self.save()
         self.reload(force=True)
+
+    def _migrate_legacy(self):
+        """把老位置（out/tune.json）的配置搬过来。
+
+        老版本把 tune.json 生成在 out/ 下，而 out/ 整个目录不入库，
+        辛苦调好的参数换台机器就没了。这里一次性迁移，老文件留着不管。
+        """
+        if not self.legacy or not os.path.exists(self.legacy):
+            return
+        try:
+            with open(self.legacy, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    if k in self.DEFAULTS:
+                        self.data[k] = v
+            print("  已把 {} 迁移到 {}".format(
+                os.path.relpath(self.legacy, ROOT),
+                os.path.relpath(self.path, ROOT)))
+        except Exception as e:
+            print("  老 tune.json 迁移失败（按默认值继续）:", e)
+            return
+        try:
+            os.remove(self.legacy)      # 老位置在 out/ 下，留着只会让人改错文件
+            print("  已把 {} 迁移到 {}，并删除老文件".format(
+                os.path.relpath(self.legacy, ROOT),
+                os.path.relpath(self.path, ROOT)))
+        except OSError:
+            print("  已把 {} 迁移到 {}".format(
+                os.path.relpath(self.legacy, ROOT),
+                os.path.relpath(self.path, ROOT)))
 
     def save(self):
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -284,11 +322,11 @@ def main():
                     help="关闭在线样本积累（默认开启，仅 template 后端有效）")
     args = ap.parse_args()
 
-    if not os.path.exists(os.path.join(HERE, "engine", "pikafish.exe")):
+    if not os.path.exists(os.path.join(ROOT, "engine", "pikafish.exe")):
         print("!! 引擎不存在：engine/pikafish.exe")
         return 1
     if args.backend == "onnx":
-        model = os.path.join(HERE, "models", "layout_nano.onnx")
+        model = os.path.join(ROOT, "models", "layout_nano.onnx")
         if not os.path.exists(model):
             print("!! 整板识别模型不存在：models/layout_nano.onnx")
             print("   运行 python download_models.py 下载（需要能访问 HuggingFace）")
@@ -308,7 +346,7 @@ def main():
             return 1
 
     os.makedirs(OUT_DIR, exist_ok=True)
-    tune = Tune(OUT_TUNE)
+    tune = Tune(TUNE_PATH)
     overridden = []
     for key in ("movetime", "depth", "interval", "stable", "hash_mb", "threads"):
         val = getattr(args, key)
@@ -333,7 +371,7 @@ def main():
     if overridden:
         print("命令行覆盖：" + "，".join(overridden))
     print("运行期参数见 {}（改了保存下一轮生效，不用重启）".format(
-        os.path.relpath(OUT_TUNE, HERE)))
+        os.path.relpath(TUNE_PATH, ROOT)))
 
     cfg, pts0, cell0 = G.load_layout()
 

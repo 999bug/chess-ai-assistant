@@ -38,8 +38,9 @@ import numpy as np
 from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CFG = os.path.join(HERE, "config", "layout.json")
-TPL = os.path.join(HERE, "out", "templates.npz")
+ROOT = os.path.dirname(HERE)          # 代码在 app/ 下，上一级才是项目根
+CFG = os.path.join(ROOT, "config", "layout.json")
+TPL = os.path.join(ROOT, "out", "templates.npz")
 SIZE = 40  # 模板归一化尺寸
 
 # 开局标准摆法：(行,列) -> (阵营, 字)
@@ -427,7 +428,7 @@ def main():
         cell = cell * ((sx + sy) / 2)
         img = grab((x, y, ww, hh))
         ts = time.strftime("%H%M%S")
-        img.save(os.path.join(HERE, "out", f"grid_{ts}.png"))
+        img.save(os.path.join(ROOT, "out", f"grid_{ts}.png"))
 
     print(f"画面 {img.width}x{img.height} 格距 {cell:.1f}")
 

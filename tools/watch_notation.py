@@ -21,7 +21,8 @@ import ocrutil
 import notation
 from probe import is_desktop_locked, list_windows, bring_to_front, grab_mss, grab_dxcam
 
-OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tools/ 的上一级
+OUT_DIR = os.path.join(ROOT, "out")
 LOG_PATH = os.path.join(OUT_DIR, "notation_log.jsonl")
 
 

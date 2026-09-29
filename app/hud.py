@@ -12,7 +12,8 @@ import os
 import tkinter as tk
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = os.path.join(HERE, "out", "suggestion.json")
+ROOT = os.path.dirname(HERE)          # 代码在 app/ 下，上一级才是项目根
+SRC = os.path.join(ROOT, "out", "suggestion.json")
 
 BG = "#16181a"
 FG = "#d8dee3"

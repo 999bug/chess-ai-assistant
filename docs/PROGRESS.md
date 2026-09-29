@@ -6,11 +6,11 @@
 
 - **当前阶段**：识别层整板 ONNX（召回 100%）+ 引擎强度/响应速度调优，见「引擎强度与响应速度」
 - **下一步第一条命令**：`powershell -ExecutionPolicy Bypass -File .\start.ps1`（一键起识别 + 浮窗）
-- **跑起来**：`python auto_coach.py`（默认 onnx 后端）+ `python hud.py`
-- **跑测试**：`python tests/test_rules_diff.py`、`test_coach_coords.py`、`test_tune_track.py`
-- **运行期调参**：改 `out/tune.json` 保存即生效，不用重启（movetime / hash_mb / threads / interval / stable…）
+- **跑起来**：`python app/auto_coach.py`（默认 onnx 后端）+ `python app/hud.py`
+- **跑测试**：`python tests/run_all.py`（一次跑完全部）
+- **运行期调参**：改 `config/tune.json` 保存即生效，不用重启（字段说明见 `docs/CONFIG.md`）
 - **旧后端**：`--backend template` 可回退到老的模板匹配，用于对比排查
-- **阻塞点**：`models/layout_nano.onnx`（31MB）不入库，换机器后要先跑 `python download_models.py`
+- **阻塞点**：`models/layout_nano.onnx`（31MB）不入库，换机器后要先跑 `python tools/download_models.py`
   （需要能访问 HuggingFace；直连不通时脚本会自动换 hf-mirror 镜像）
 - **未完成决策**：是否把整板识别接到 `watch_board.py`（它还在用霍夫圆，见 §待办）
 - **未完成决策**：`rules.py` 只做必要条件校验，不做完整可达性搜索。一个 22 子的残盘
@@ -59,7 +59,7 @@
 | 张量 | NCHW float32，输入名 `input` |
 | 输出 | `output` = `(batch, 90, 16)`，下标 `行*9+列`，16 类顺序见 `board_onnx.CLASSES` |
 
-### 实测结果（`python eval_recognition.py`）
+### 实测结果（`python tools/eval_recognition.py`）
 
 | 方案 | 逐格准确率 | 子力召回 | 幻影 | 整盘全对 | 单帧耗时 |
 |---|---|---|---|---|---|
@@ -136,7 +136,7 @@ JJ象棋 有「棋力评测」等非标准开局模式，所以这里只告警�
 
 `coach.py` 每次都用孤立 FEN 提问，引擎看不到之前下过什么，就判断不了重复局面
 （三次重复算和棋）——该求和的盘当优势磨，能逼和的时候又看不出来。
-现在 `auto_coach.py` 用 `MoveTrack` 维护「起点局面 + 着法序列」，
+现在 `app/auto_coach.py` 用 `MoveTrack` 维护「起点局面 + 着法序列」，
 提问时发 `position fen <起点> moves <…>`。
 
 安全性：每次追加着法都在本地重放一遍，只有重放结果与当前识别盘面**完全一致**
@@ -166,6 +166,26 @@ JJ象棋 有「棋力评测」等非标准开局模式，所以这里只告警�
 - 缩小网络输入分辨率：280×315 252ms、224×252 264ms、196×220 254ms，
   基本不省，还会破坏预处理契约。
 
+## 目录调整与配置归位（2026-09-29）
+
+根目录原来平铺着 20 来个文件，运行时代码、一次性脚本、文档、单页 HTML 混在一起。
+按用途重分了目录：
+
+- `app/` —— 运行时核心（`auto_coach` / `coach` / `rules` / `board_onnx` /
+  `grid_classify` / `hud`）。这 6 个模块之间是"同目录裸 import"（`import rules` 这种），
+  放进同一个目录后 **import 一行都不用改**。
+- `tools/` —— 辅助与一次性脚本（标定、探测、评测、下载、早期实现）。
+- `docs/` —— 文档与那个单页 HTML（`docs/index.html`）。
+
+**配套改动（不做这些就会到处找不到文件）**：所有以"脚本所在目录"为基准的路径
+（`os.path.join(HERE, "config"…)`）都改成**以项目根为基准**
+（`ROOT = os.path.dirname(HERE)`）——脚本现在下沉了一层。
+`tests/` 通过 `sys.path.insert(0, ROOT/"app")` 找到运行时模块。
+
+另外把 `tune.json` 从 `out/` 挪到了 `config/`：`out/` 整个目录是运行期产物、
+被 `.gitignore` 挡着，配置放里面换台机器就丢了。启动时会自动把老位置的
+`tune.json` 迁移过来并删除老文件（一次性）。
+
 ## 已完成
 
 | 项 | 结论 |
@@ -176,7 +196,7 @@ JJ象棋 有「棋力评测」等非标准开局模式，所以这里只告警�
 | 中文 OCR | RapidOCR + onnxruntime 已装好并跑通（此前失败仅因置信度是字符串） |
 | 棋盘坐标标定 | 详见下方「坐标与验证」 |
 | 识别层 | 整板 ONNX 分类，子力召回 100%（见上节） |
-| 评测基线 | `tests/gt/recognition_gt.json` + `eval_recognition.py`，可复跑 |
+| 评测基线 | `tests/gt/recognition_gt.json` + `tools/eval_recognition.py`，可复跑 |
 | 守门员 | 抽到 `rules.py`，静态 + 时序两层（差分支持 ≤3 步 + 吃子）；开局帧严格比对 |
 | 引擎强度 | movetime 取代 depth（到达深度 23 vs 14）、Hash 512MB、Threads 按核数；nps 90万 → 420万 |
 | 响应速度 | 两级检测 + interval 0.25s + stable 2，确认延迟 5.4s → 约 1s |
@@ -184,17 +204,29 @@ JJ象棋 有「棋力评测」等非标准开局模式，所以这里只告警�
 
 ### 文件清单
 
+> 代码按用途分了目录：`app/` 是运行时核心，`tools/` 是辅助与一次性脚本。
+> 两者都靠"自己所在目录"找同级模块，靠**项目根**找 config / models / engine / out。
+
 | 文件 | 作用 |
 |---|---|
-| `board_onnx.py` | 整板识别适配层：四点拉正 → ONNX 推理 → 内部 `(side, piece)` 标签 |
-| `rules.py` | 象棋规则：局面校验（含将帅照面）+ 相邻帧着法差分 |
-| `eval_recognition.py` | 识别准确率评测（逐格/子力召回/幻影/整盘全对） |
-| `download_models.py` | 拉取 ONNX 权重（HuggingFace 直连不通时自动换 hf-mirror） |
+| `app/auto_coach.py` | 主循环 + 运行期调参（`Tune`）+ 着法历史（`MoveTrack`）+ 两级画面检测 |
+| `app/coach.py` | 引擎封装（UCI）+ FEN 生成 + 中文记谱 |
+| `app/rules.py` | 局面静态校验 + 相邻帧着法差分（≤3 步，含吃子处理） |
+| `app/board_onnx.py` | 整板识别适配层：四点拉正 → ONNX 推理 → 内部 `(side, piece)` 标签 |
+| `app/grid_classify.py` | 旧的逐格模板匹配后端（`--backend template` 回退用），也提供抓图与布局读取 |
+| `app/hud.py` | 置顶浮窗 |
+| `tools/eval_recognition.py` | 识别准确率评测（逐格/子力召回/幻影/整盘全对） |
+| `tools/calibrate.py` | 棋盘坐标标定，产出 `config/layout.json` |
+| `tools/download_models.py` | 拉取 ONNX 权重（HuggingFace 直连不通时自动换 hf-mirror） |
+| `tools/probe.py` | 窗口枚举与截图方式探测 |
+| `tools/board_read.py`、`grid_read.py`、`watch_board.py`、`watch_notation.py` | 早期实现（霍夫圆 / 逐格模板 / 棋谱 OCR），保留供对比与回溯 |
+| `tools/notation.py`、`ocrutil.py` | 中文记谱解析、RapidOCR 封装 |
+| `config/tune.json` | 运行期参数（**入库**），改了保存下一轮生效；字段说明见 `docs/CONFIG.md` |
 | `tests/gt/recognition_gt.json` | 人工核对过的真值（**新增真值必须先放大逐格核对，不能拿识别结果当真值**） |
 | `tests/test_rules_diff.py` | `rules.diff` 回归：单步/吃子/双方各走一步/多步，以及真正该告警的异常 |
 | `tests/test_coach_coords.py` | UCCI ↔ (行,列) 互逆 + 中文记谱（炮二平五、马八进七…） |
 | `tests/test_tune_track.py` | 运行期调参热更新 + 着法历史的安全降级 |
-| `out/tune.json` | 运行期参数（不入库），改了保存下一轮生效 |
+| `tests/run_all.py` | 一次跑完全部测试 |
 
 ## 坐标与验证（已写入 config/layout.json）
 
@@ -226,8 +258,8 @@ JJ象棋 有「棋力评测」等非标准开局模式，所以这里只告警�
 
 ## 待办
 
-1. `watch_board.py` 还在用霍夫圆 + 逐格判占位，应切到 `board_onnx`
-2. 棋谱区（notation）坐标仍未标定；`notation.py` 的中文记谱解析已就绪但没有输入源
+1. `tools/watch_board.py` 还在用霍夫圆 + 逐格判占位，要么切到 `board_onnx`，要么删掉
+2. 棋谱区（notation）坐标仍未标定；`tools/notation.py` 的记谱解析已就绪但没有输入源
 3. 补更多人工核对过的真值帧（当前只有 2 帧），中局/残局/动画帧都要覆盖
 4. 逐帧网格重估：棋盘四点用当前帧的棋子圆心反推，抵消标定漂移
 5. 自动走子（当前只给建议，不落子）

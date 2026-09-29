@@ -22,7 +22,8 @@ if getattr(sys.stdout, "encoding", None) != "utf-8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-MODELS = os.path.join(HERE, "models")
+ROOT = os.path.dirname(HERE)          # 代码在 tools/ 下，上一级才是项目根
+MODELS = os.path.join(ROOT, "models")
 
 SPACE = "yolo12138/Chinese_Chess_Recognition"
 HOSTS = ["https://huggingface.co", "https://hf-mirror.com"]

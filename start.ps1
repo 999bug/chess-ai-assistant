@@ -139,7 +139,7 @@ Say ""
 # ---------- 3. 启动 ----------
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }
 
-$coachArgs = @("auto_coach.py", "--side", $Side, "--backend", $Backend,
+$coachArgs = @("app\auto_coach.py", "--side", $Side, "--backend", $Backend,
                "--movetime", "$Movetime", "--interval", "$Interval", "--stable", "$Stable")
 if ($Depth -gt 0)   { $coachArgs += @("--depth", "$Depth") }
 if ($HashMB -gt 0)  { $coachArgs += @("--hash-mb", "$HashMB") }
@@ -159,7 +159,7 @@ $coach = Start-Process -FilePath $idPy -ArgumentList (@("-u") + $coachArgs) `
 Start-Sleep -Seconds 2
 
 Say "启动浮窗..." "Cyan"
-$hud = Start-Process -FilePath $uiPy -ArgumentList "hud.py" `
+$hud = Start-Process -FilePath $uiPy -ArgumentList "app\hud.py" `
     -WorkingDirectory $Proj -PassThru
 
 Say ""
@@ -172,7 +172,7 @@ if ($Depth -gt 0) {
 Say "  · 浮窗在屏幕右上角，可拖动，按 Esc 或关闭窗口即停" "White"
 Say "  · 认不准时它显示「识别不确定」，不会乱出招" "White"
 Say "  · 轮对方走时它会说明，不会给出用不上的建议" "White"
-Say "  · 想临时调参数：改 out\tune.json 保存即可，下一轮生效，不用重启" "White"
+Say "  · 想临时调参数：改 config\tune.json 保存即可，下一轮生效，不用重启" "White"
 Say ""
 Say "（关闭浮窗窗口，这里会自动收尾）" "DarkGray"
 

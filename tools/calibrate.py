@@ -36,8 +36,9 @@ import win32gui
 from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT_DIR = os.path.join(HERE, "out")
-CFG_DIR = os.path.join(HERE, "config")
+ROOT = os.path.dirname(HERE)          # 代码在 tools/ 下，上一级才是项目根
+OUT_DIR = os.path.join(ROOT, "out")
+CFG_DIR = os.path.join(ROOT, "config")
 os.makedirs(OUT_DIR, exist_ok=True)
 os.makedirs(CFG_DIR, exist_ok=True)
 

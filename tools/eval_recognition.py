@@ -30,8 +30,11 @@ if getattr(sys.stdout, "encoding", None) != "utf-8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GT_PATH = os.path.join(HERE, "tests", "gt", "recognition_gt.json")
-SNAP_DIR = os.path.join(HERE, "out")
+ROOT = os.path.dirname(HERE)          # 代码在 tools/ 下，上一级才是项目根
+GT_PATH = os.path.join(ROOT, "tests", "gt", "recognition_gt.json")
+SNAP_DIR = os.path.join(ROOT, "out")
+# 运行时核心在 app/ 下，这里要用到 board_onnx / grid_classify
+sys.path.insert(0, os.path.join(ROOT, "app"))
 
 
 def load_gt():

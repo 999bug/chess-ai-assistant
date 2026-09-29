@@ -30,7 +30,8 @@ import numpy as np
 from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CFG_PATH = os.path.join(HERE, "config", "layout.json")
+ROOT = os.path.dirname(HERE)          # 代码在 tools/ 下，上一级才是项目根
+CFG_PATH = os.path.join(ROOT, "config", "layout.json")
 
 
 def load_cfg():

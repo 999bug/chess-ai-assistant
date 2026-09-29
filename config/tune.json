@@ -1,0 +1,11 @@
+{
+  "movetime": 1000,
+  "depth": null,
+  "hash_mb": 512,
+  "threads": null,
+  "interval": 0.25,
+  "stable": 2,
+  "sig_thr": 0.002,
+  "force_after": 6.0,
+  "max_steps": 3
+}

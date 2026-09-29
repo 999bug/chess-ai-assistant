@@ -24,7 +24,8 @@ import numpy as np
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CFG = os.path.join(HERE, "config", "layout.json")
+ROOT = os.path.dirname(HERE)          # 代码在 tools/ 下，上一级才是项目根
+CFG = os.path.join(ROOT, "config", "layout.json")
 
 RED_LIMIT = {("帅", 1), ("仕", 2), ("相", 2), ("马", 2), ("车", 2), ("炮", 2), ("兵", 5)}
 BLACK_LIMIT = {("将", 1), ("士", 2), ("象", 2), ("马", 2), ("车", 2), ("炮", 2), ("卒", 5)}
@@ -150,7 +151,7 @@ def main():
 
     with open(CFG, "r", encoding="utf-8") as f:
         cfg = json.load(f)
-    snap = args.snapshot or os.path.join(HERE, "out", cfg["image"]["snapshot"])
+    snap = args.snapshot or os.path.join(ROOT, "out", cfg["image"]["snapshot"])
     if not os.path.exists(snap):
         print(f"!! 快照不存在: {snap}")
         return 1
@@ -203,7 +204,7 @@ def main():
         for p in problems:
             print(f"   - {p}")
 
-    out = os.path.join(HERE, "out", "board.json")
+    out = os.path.join(ROOT, "out", "board.json")
     with open(out, "w", encoding="utf-8", newline="\n") as f:
         json.dump({"snapshot": os.path.basename(snap),
                    "cells": [[r, c, v["piece"], v["side"], v["conf"]]

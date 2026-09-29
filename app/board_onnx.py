@@ -34,8 +34,9 @@ if getattr(sys.stdout, "encoding", None) != "utf-8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CFG = os.path.join(HERE, "config", "layout.json")
-MODEL = os.path.join(HERE, "models", "layout_nano.onnx")
+ROOT = os.path.dirname(HERE)          # 代码在 app/ 下，上一级才是项目根
+CFG = os.path.join(ROOT, "config", "layout.json")
+MODEL = os.path.join(ROOT, "models", "layout_nano.onnx")
 
 # 模型的 16 个类别，顺序必须与训练时一致，不能改
 CLASSES = [
@@ -234,8 +235,8 @@ def main():
 
     if args.show_warp:
         import cv2
-        os.makedirs(os.path.join(HERE, "out"), exist_ok=True)
-        p = os.path.join(HERE, "out", "warped_board.png")
+        os.makedirs(os.path.join(ROOT, "out"), exist_ok=True)
+        p = os.path.join(ROOT, "out", "warped_board.png")
         cv2.imwrite(p, cv2.cvtColor(warped, cv2.COLOR_RGB2BGR))
         print(f"\n拉正后的棋盘: {p}")
     return 0

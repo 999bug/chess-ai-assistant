@@ -23,7 +23,8 @@ from PIL import Image
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CFG = os.path.join(HERE, "config", "layout.json")
+ROOT = os.path.dirname(HERE)          # 代码在 tools/ 下，上一级才是项目根
+CFG = os.path.join(ROOT, "config", "layout.json")
 
 # 开局标准摆法：行 -> {列: (阵营, 字)}
 SETUP = {}
@@ -82,7 +83,7 @@ def main():
     pts = b.get("points") or b.get("points_px")
     c0 = b.get("cell") or b.get("cell_px")
     cell = float(c0[0]) if isinstance(c0, (list, tuple)) else float(c0)
-    snap = args.snapshot or os.path.join(HERE, "out", cfg["image"]["snapshot"])
+    snap = args.snapshot or os.path.join(ROOT, "out", cfg["image"]["snapshot"])
     img = Image.open(snap).convert("RGB")
     arr = np.asarray(img)
     print(f"快照 {img.width}x{img.height} 格距 {cell:.1f}  {os.path.basename(snap)}")
@@ -144,7 +145,7 @@ def main():
         print(f"  {ri}  " + " ".join(line))
     print(f"\n兵种识别与开局一致: {ok_type}/{len(cells)}（* 为不一致）")
 
-    out = os.path.join(HERE, "out", "board_grid.json")
+    out = os.path.join(ROOT, "out", "board_grid.json")
     with open(out, "w", encoding="utf-8", newline="\n") as f:
         json.dump({"snapshot": os.path.basename(snap),
                    "cells": [[r, c, v.get("type", [None, None])[0],

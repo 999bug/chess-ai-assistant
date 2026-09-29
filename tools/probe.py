@@ -28,7 +28,8 @@ except Exception:
     except Exception:
         pass
 
-OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tools/ 的上一级
+OUT_DIR = os.path.join(ROOT, "out")
 
 KEYWORDS = ["象棋", "JJ", "jj", "WeChat", "微信", "应用宝", "MyApp", "Androws",
             "MuMu", "雷电", "LDPlayer", "夜神", "BlueStacks", "手游助手", "模拟器"]

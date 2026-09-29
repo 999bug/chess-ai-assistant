@@ -15,7 +15,8 @@ if getattr(sys.stdout, "encoding", None) != "utf-8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
+# 运行时核心在 app/ 下（测试在 tests/，两者都挂在项目根下）
+sys.path.insert(0, os.path.join(ROOT, "app"))
 
 import rules
 
