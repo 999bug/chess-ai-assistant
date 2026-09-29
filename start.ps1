@@ -1,8 +1,8 @@
 ﻿# JJ象棋 自动教练 —— 一键启动（PowerShell）
 #
-# 用法：
+# 用法（Windows PowerShell 5.1 和 PowerShell 7 都能跑）：
 #   powershell -ExecutionPolicy Bypass -File .\start.ps1
-#   powershell -ExecutionPolicy Bypass -File .\start.ps1 -Side black -Movetime 1500
+#   pwsh -File .\start.ps1 -Side black -Movetime 1500
 #   powershell -ExecutionPolicy Bypass -File .\start.ps1 -Depth 20      # 想固定深度时
 #
 # 它会：
@@ -86,54 +86,141 @@ if ($Backend -eq "onnx") {
 
 # ---------- 2. 找 Python ----------
 # 识别进程需要 cv2 / numpy / mss / onnxruntime，负责抓图 + 识别 + 引擎；
-# 浮窗需要 tkinter（标准库自带）。多数情况同一个 Python 就够。
-# 识别依赖装在独立虚拟环境、浮窗另用解释器时，用环境变量分别指定：
+# 浮窗只需要 tkinter。这两个条件**不一定由同一个解释器满足**：
+# 识别依赖常装在独立虚拟环境里，而 standalone 版 Python 不带 tcl/tk（没有 tkinter），
+# 所以浮窗通常得退到系统 CPython（如 Python310）。
+# 想手工指定就设环境变量，设了就以它为准（不达标会直接报错，不做静默回退）：
 #   $env:JJCHESS_ID_PY / $env:JJCHESS_UI_PY
+$ID_MODS = @("cv2", "numpy", "mss", "onnxruntime")
+
+# 探测代码写成临时 .py 再跑，不用 python -c：
+# Windows PowerShell 5.1 往原生命令传带双引号的参数会转义错乱，
+# `& python -c 'print("x")'` 会直接报错退出，白探一场。落盘最省心。
+# 文件名带 PID，多个 start.ps1 同时跑也不会互相踩。
+$probePy = Join-Path $env:TEMP ("jj_py_probe_{0}.py" -f $PID)
+@'
+import importlib.util as u
+miss = [m for m in ("cv2", "numpy", "mss", "onnxruntime") if u.find_spec(m) is None]
+print("MISS=" + ",".join(miss))
+print("TK=1" if u.find_spec("tkinter") else "TK=0")
+'@ | Set-Content -Path $probePy -Encoding ASCII
+
+# 一次 spawn 同时探识别依赖和 tkinter，别让每个解释器跑两遍
+function Probe-Py($exe) {
+    $r = [pscustomobject]@{ Exe = $exe; Ok = $false; Missing = $ID_MODS; Tk = $false }
+    try {
+        $out = & $exe $probePy 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $out) { return $r }
+        $r.Ok = $true
+        foreach ($line in $out) {
+            if ($line -like "MISS=*") {
+                $miss = $line.Substring(5)
+                if ($miss) { $r.Missing = @($miss -split ",") } else { $r.Missing = @() }
+            }
+            elseif ($line -like "TK=*") { $r.Tk = ($line -eq "TK=1") }
+        }
+    }
+    catch { }
+    return $r
+}
+
+function Show-Probes($list) {
+    Say "  探测到的解释器：" "DarkGray"
+    foreach ($r in $list) {
+        if (-not $r.Ok)                             { $state = "跑不起来" }
+        elseif ($r.Missing.Count -and -not $r.Tk)   { $state = "缺 " + ($r.Missing -join "/") + "，且无 tkinter" }
+        elseif ($r.Missing.Count)                   { $state = "缺 " + ($r.Missing -join "/") }
+        elseif (-not $r.Tk)                         { $state = "无 tkinter" }
+        else                                        { $state = "OK" }
+        Say ("    {0}`n        -> {1}" -f $r.Exe, $state) "DarkGray"
+    }
+}
+
+# 环境变量是硬指定：不达标就明说缺什么，绝不偷偷换一个解释器
+$idPy = $null
+$uiPy = $null
+foreach ($pair in @(@("识别", $env:JJCHESS_ID_PY, "cv2 / numpy / mss / onnxruntime"),
+                    @("浮窗", $env:JJCHESS_UI_PY, "tkinter"))) {
+    $role = $pair[0]; $exe = $pair[1]; $need = $pair[2]
+    if (-not $exe) { continue }
+    $r = Probe-Py $exe
+    $bad = (-not $r.Ok) -or ($role -eq "识别" -and $r.Missing.Count -gt 0) -or ($role -eq "浮窗" -and -not $r.Tk)
+    if ($bad) {
+        Say "环境变量指定的${role}解释器不满足依赖（需要 $need）：$exe" "Red"
+        if (-not $r.Ok) { Say "  这个路径跑不起来（路径不对，或是不能用的存根）" "Yellow" }
+        if ($role -eq "识别" -and $r.Missing.Count) {
+            Say "  缺: $($r.Missing -join ', ')" "Yellow"
+            Say "  装依赖: `"$exe`" -m pip install opencv-python numpy mss onnxruntime" "Yellow"
+        }
+        if ($role -eq "浮窗" -and -not $r.Tk) {
+            Say "  缺: tkinter" "Yellow"
+            Say "  （tkinter 是标准库，pip 装不上；换一个自带 tkinter 的官方 CPython）" "Yellow"
+        }
+        Remove-Item $probePy -ErrorAction SilentlyContinue
+        exit 1
+    }
+    if ($role -eq "识别") { $idPy = $exe } else { $uiPy = $exe }
+}
+
+# 自动探测
 $cands = @()
-if ($env:JJCHESS_ID_PY) { $cands += $env:JJCHESS_ID_PY }
-if ($env:JJCHESS_UI_PY) { $cands += $env:JJCHESS_UI_PY }
 foreach ($n in @("python", "python3", "py")) {
     $c = Get-Command $n -ErrorAction SilentlyContinue
     if ($c) { $cands += $c.Source }
 }
+# 本机放识别依赖的隔离环境（standalone 构建：有 cv2/onnxruntime，但没有 tkinter）
+if ($env:USERPROFILE) {
+    $cands += (Join-Path $env:USERPROFILE ".workbuddy\binaries\python\envs\default\Scripts\python.exe")
+}
+# 项目自带虚拟环境
+foreach ($d in @(".venv", "venv")) { $cands += (Join-Path $Proj "$d\Scripts\python.exe") }
+# 系统里常见的 CPython 安装位置（tkinter 一般在这里）
 foreach ($v in @("313", "312", "311", "310")) {
     $cands += (Join-Path $env:LOCALAPPDATA "Programs\Python\Python$v\python.exe")
 }
 
-# 能 import 就认，避免只看路径猜错解释器
-function Test-PyMod($exe, $code) {
-    try {
-        & $exe -c $code 2>$null | Out-Null
-        return ($LASTEXITCODE -eq 0)
-    }
-    catch { return $false }
-}
-
-$idPy = $null
-$uiPy = $null
+$probes = @()
 foreach ($p in ($cands | Where-Object { $_ } | Select-Object -Unique)) {
-    if (-not (Test-Path $p)) { continue }
-    # WindowsApps 下的 python.exe 是微软商店的存根，跑起来会弹应用商店，跳过
-    if ($p -like "*\WindowsApps\*") { continue }
-    if (-not $idPy -and (Test-PyMod $p "import cv2, numpy, mss, onnxruntime")) { $idPy = $p }
-    if (-not $uiPy -and (Test-PyMod $p "import tkinter"))                    { $uiPy = $p }
-    if ($idPy -and $uiPy) { break }
+    if (-not (Test-Path $p)) { continue }          # 残缺安装（目录还在、exe 没了）在这被滤掉
+    if ($p -like "*\WindowsApps\*") { continue }   # 微软商店存根，跑起来只会弹商店
+    $probes += (Probe-Py $p)
+}
+# 探测完就删（环境变量不达标的分支会提前 exit，最多在 TEMP 里留个几 KB 的小文件，无所谓）
+Remove-Item $probePy -ErrorAction SilentlyContinue
+
+if (-not $idPy) {
+    $idPy = ($probes | Where-Object { $_.Ok -and $_.Missing.Count -eq 0 } | Select-Object -First 1).Exe
+}
+if (-not $uiPy) {
+    # 能复用识别用的解释器就复用，否则另找一个有 tkinter 的
+    $reuse = $probes | Where-Object { $_.Exe -eq $idPy -and $_.Tk } | Select-Object -First 1
+    if ($reuse) { $uiPy = $reuse.Exe }
+    else        { $uiPy = ($probes | Where-Object { $_.Ok -and $_.Tk } | Select-Object -First 1).Exe }
 }
 
 if (-not $idPy) {
     Say "没找到装了识别依赖的 Python（cv2 / numpy / mss / onnxruntime）" "Red"
+    Show-Probes $probes
+    Say "  本项目的识别依赖通常装在这个隔离环境里：" "Yellow"
+    Say "    $env:USERPROFILE\.workbuddy\binaries\python\envs\default\Scripts\python.exe" "DarkGray"
     Say "  装依赖: <你的python> -m pip install opencv-python numpy mss onnxruntime" "Yellow"
     Say "  或指定: `$env:JJCHESS_ID_PY = '...\python.exe'" "Yellow"
     exit 1
 }
 if (-not $uiPy) {
     Say "没找到带 tkinter 的 Python（浮窗需要它）" "Red"
+    Show-Probes $probes
+    Say "  注意：识别用的隔离环境是 standalone 版，**自带没有 tkinter**，" "Yellow"
+    Say "  浮窗要另指一个系统 CPython（常见位置 $env:LOCALAPPDATA\Programs\Python\Python310\python.exe）" "Yellow"
     Say "  或指定: `$env:JJCHESS_UI_PY = '...\python.exe'" "Yellow"
     exit 1
 }
 
 Say "识别引擎 Python: $idPy" "Green"
 Say "浮窗     Python: $uiPy" "Green"
+if ($idPy -ne $uiPy) {
+    Say "  （两者不同属正常：隔离环境没有 tkinter，浮窗借用系统 Python）" "DarkGray"
+}
 Say ""
 
 # ---------- 3. 启动 ----------

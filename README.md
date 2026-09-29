@@ -85,7 +85,19 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 
 `start.ps1` 会依次：清理上次残留进程 → 检查引擎与模型是否就位 →
 自动挑出装了识别依赖的 Python 和带 tkinter 的 Python → 启动识别进程 + 置顶浮窗。
-关掉浮窗窗口即自动停止全部进程。
+关掉浮窗窗口即自动停止全部进程。（Windows PowerShell 5.1 和 PowerShell 7 都支持。）
+
+**两个 Python 可能不是同一个。** 识别依赖（`cv2` / `numpy` / `mss` / `onnxruntime`）
+常装在独立虚拟环境里，而这类环境多为 python-build-standalone 构建，**不带 tcl/tk**，
+所以浮窗得退到系统里自带的 CPython（如 `Python310`）。`start.ps1` 会自动探测，
+找不到时会在报错里逐个列出解释器缺什么；也能手工硬指定：
+
+```powershell
+$env:JJCHESS_ID_PY = "D:\py-venv\Scripts\python.exe"   # 识别 + 引擎
+$env:JJCHESS_UI_PY = "C:\Python310\python.exe"         # 浮窗（必须带 tkinter）
+```
+
+设了就以它为准，不达标会直接报错，不会偷偷换一个解释器。
 
 也可以手动开两个终端：
 
