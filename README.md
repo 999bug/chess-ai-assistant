@@ -126,10 +126,17 @@ python app/hud.py                       # 浮窗
 
 ```bash
 python app/auto_coach.py --side black --movetime 1500     # 引擎想更强
+python app/auto_coach.py --turn black                     # 中途接手，进场时轮黑方走
 python app/auto_coach.py --backend template               # 回退到旧的模板匹配后端
 python tools/eval_recognition.py --backend both --verbose
 python tools/download_models.py --force
 ```
+
+**中途接手也能用**：对局打到一半才把引擎打开时，"现在轮到谁走"是它必须知道
+的第一件事（JJ象棋 界面上没有这个提示，原来只能假定「轮我方」）。现在进场会先推断：
+被将军的局面判得出来（轮到我走时对方不可能正被将军，反之亦然），平静局面判不出来
+就先按「我方走」算**并在浮窗提示**——这种时候用 `--turn red|black` 直接告诉它最准。
+就算当时猜错了也会自己纠正：下一帧只要看出某一步是谁走的，轮次对不上就翻过来重排。
 
 **运行期参数在 `config/tune.json`**——改了保存即生效，不用重启进程
 （引擎的 Hash/Threads 走 `setoption` 热改，思考时间本来就是每步 `go` 的参数）。

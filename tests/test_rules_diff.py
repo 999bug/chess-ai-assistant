@@ -53,6 +53,30 @@ def case(name, expect, prev, cur):
         FAIL.append("{}: 期望 {} 实际 {}（{}）".format(name, expect, kind, why))
 
 
+def check(name, got, want):
+    ok = got == want
+    print("  {} {:<44} -> {!r}".format("PASS" if ok else "FAIL", name, got))
+    if not ok:
+        FAIL.append("{}: 期望 {!r} 实际 {!r}".format(name, want, got))
+
+
+def case_order(name, first_side, prev, cur, expect_kind="multi_move"):
+    """断言差分的**顺序**：给了轮次时，第一手必须归那一方。
+
+    这个坑漏过一次：旧实现只重排"目的地"、不重排"谁先谁后"，而先后直接等于
+    盘面的行优先顺序——黑方子力靠上，于是两步互不相干的走子永远排成"黑先红后"。
+    引擎收到"标着红先、却先给黑着法"的命令，判 Illegal move 之后**自己退出**。
+    """
+    kind, why, seq = rules.explain_change(mk(prev), mk(cur), 3, first_side)
+    got = rules.pieces(mk(prev))[seq[0][0]][0] if seq else "空"
+    ok = kind == expect_kind and (not seq or got == first_side)
+    print("  {} {:<44} -> {:<11} 首手 {}".format(
+        "PASS" if ok else "FAIL", name, kind, got))
+    if not ok:
+        FAIL.append("{}: 期望 {} 首手 {}，实际 {} 首手 {}".format(
+            name, expect_kind, first_side, kind, got))
+
+
 print("=== 正常情况（必须不告警）===")
 
 case("无变化", "same", setup(), setup())
@@ -104,6 +128,36 @@ case("一次动了 4 处（超过上限）", "noisy",
 case("凭空消失两处", "noisy",
      setup(),
      setup(**{"0,7": None, "0,1": None}))
+
+print("\n=== 着法顺序：第一手必须归该走的那一方 ===")
+
+# 两步互不相干（不互吃、路径不冲突）时，正反两种顺序在几何上都成立，
+# 只有轮次能定序。这一组就是线上那两条 FEN 的抽象版。
+case_order("红先：红炮 + 黑马 各一步 -> 首手必须是红炮", "R",
+           setup(), setup(**{"7,7": None, "7,4": "R炮",
+                             "0,7": None, "2,6": "B馬"}))
+case_order("黑先：同一组变化 -> 首手必须是黑马", "B",
+           setup(), setup(**{"7,7": None, "7,4": "R炮",
+                             "0,7": None, "2,6": "B馬"}))
+
+# 不给轮次时保持旧行为（先后 = 行优先，所以黑方排前面）。
+# 这不是期望行为，只是把"bug 的来源"钉住，免得日后再被人当成正常。
+_k, _w, _seq = rules.explain_change(
+    mk(setup()), mk(setup(**{"7,7": None, "7,4": "R炮",
+                             "0,7": None, "2,6": "B馬"})), 3)
+check("不给轮次时排成黑先（旧行为，仅作记录）",
+      rules.pieces(mk(setup()))[_seq[0][0]][0], "B")
+
+# 两步都归同一方，就不该拿"另一方先走"去硬解释 -> noisy，交上层降级
+case_order("红先，但两步都归黑方 -> 认不出", "R",
+           setup(), setup(**{"0,7": None, "2,6": "B馬",
+                             "0,1": None, "2,2": "B馬"}),
+           expect_kind="noisy")
+
+# 单步没有顺序问题，走子方照样要对上
+case_order("红先，但单步是黑马 -> 认不出", "R",
+           setup(), setup(**{"0,7": None, "2,6": "B馬"}),
+           expect_kind="noisy")
 
 print()
 if FAIL:

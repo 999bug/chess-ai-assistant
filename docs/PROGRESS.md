@@ -11,6 +11,8 @@
 - **跑起来**：`python app/auto_coach.py`（默认 onnx 后端）+ `python app/hud.py`
 - **跑测试**：`python tests/run_all.py`（一次跑完全部）
 - **运行期调参**：改 `config/tune.json` 保存即生效，不用重启（字段说明见 `docs/CONFIG.md`）
+- **轮次**：`auto_coach` 进场时会推一次"现在轮到谁走"（被将军的局面判得出来），
+  判不出就按我方算并在浮窗提示；用 `--turn red|black` 指定最准。猜错了下一帧会自纠
 - **旧后端**：`--backend template` 可回退到老的模板匹配，用于对比排查
 - **阻塞点**：`models/layout_nano.onnx`（31MB）不入库，换机器后要先跑 `python tools/download_models.py`
   （需要能访问 HuggingFace；直连不通时脚本会自动换 hf-mirror 镜像）
@@ -317,6 +319,65 @@ JJ象棋 有「棋力评测」等非标准开局模式，所以这里只告警�
    完整 FEN、校验没过的**全部**问题、差分异常的两帧 FEN、
    引擎的下发命令 / 原始输出 / 退出码 / 重启记录。
 
+## 轮次：从写死「我方」改成真实状态（2026-09-29 修引擎拒收局面）
+
+### 症状
+
+`log/engine-*.log` 里规律性出现
+
+```
+info string CRITICAL ERROR: ... Reason: Illegal move: h7f7
+```
+
+之后 pikafish **自己退出**，`auto_coach` 只好重启进程，这一手的建议就丢了。
+15:04 / 15:07 / 15:08 各一次，`moves` 分别是 `h7f7 b0c2`、`f7f2 a0b0`、
+`e2e1 f2b2 h9g7 b0b2`——共同点是**第一手不归"起点 FEN 说的那一方"**。
+
+### 根因：着法的先后顺序没人管轮次
+
+1. `rules.move_legal()` 只判几何形状（子系统/路径/蹩腿），不看轮到谁走。
+2. `explain_change()` 原来**只重排"目的地"、不重排"谁先谁后"**，而先后直接等于
+   `movers` 的行优先顺序。两步互不相干（不互吃、路径不冲突）时正反两种顺序在
+   几何上都成立，于是黑方那一步（行号小、靠上）**永远**被排到第一手。
+3. `board_to_fen(board, args.side)` 把每个 FEN 一律标成"我方走"，
+   引擎据此要求第一手归我方 → 直接判 illegal。
+4. `MoveTrack.push()` 也只调 `move_legal`，没有轮次概念，错序历史被原样收下并累积
+   （那条 4 步历史就是这么攒的：前两步被几何唯一确定所以顺序对了，后两步排反了）。
+
+### 改法
+
+- `explain_change(prev, cur, max_steps, first_side=None)`：**配对和先后都穷举**
+  （≤3 步最多 3!×3! = 36 种），只接受"首手归 `first_side`、之后逐手交替"的排列；
+  一条都排不出来就返回 `noisy`，由上层决定是纠正轮次还是丢掉历史。
+  不给 `first_side` 时第一个解就是原来的遍历顺序，行为与旧版逐字一致。
+- `MoveTrack` 现在持有**轮次**（`turn` + `start_pos`），起点 FEN 由
+  `(start_pos, turn)` 现算——FEN 标注和历史首手从此同源，不可能矛盾。
+  `push()` 逐步校验"这一步归谁走"，`history_turn_ok()` 是提问前的最后一道保险
+  （真出问题也只是丢历史退化成孤立局面，不会再让引擎自杀一次）。
+- **中途进场**的轮次从哪来：`--turn red|black|auto`（默认 auto）→
+  `rules.guess_turn()` 从局面推断（`king_capturable` 双向用：我方能吃到对方的将
+  就不可能轮我方；对方能吃到我方的将就轮我方）→ 都判不出就按我方算并**告警**。
+- 猜错了能自纠：差分解释不通时换个轮次再试一次，成立就翻过来重排。
+- 删掉 `len(moves) % 2` 那个奇偶判断，直接看 `track.expect_first()`。
+- 守门员没过的那一帧**不再跑差分**（过去会跑，等于让说不通的盘面去改着法历史）。
+
+### 验证
+
+- `tests/run_all.py` 4 个文件全过：`test_rules_diff.py` 新增 5 条顺序断言，
+  `test_tune_track.py` 新增 13 条（轮次拒绝、历史自检、中途进场推断）。
+- 临时脚手架（在 `out/` 下，不入库）：`repro_history_order.py` 用日志里那两帧复现，
+  修前退出码 1、修后 PASS；`smoke_midgame.py` 模拟中途进场 + 轮次自纠，产出的
+  `position fen … b - - 0 1 moves h9g7` 丢给真 pikafish 正常出 `bestmove`。
+- 真引擎对照：`moves h7f7 b0c2` → `CRITICAL ERROR: Illegal move` 后退出；
+  `moves b0c2 h7f7` → 正常出招。
+
+### 顺带修的
+
+- `coach.board_to_fen()` 现在也收纯标签（着法历史里存的就是标签，没有分数）。
+- `coach.rc_to_ucci()` 的 docstring 写 `(9,0) -> 'a9'` 是错的，实际是 `'a0'`。
+- `kind == "same"` 不再落进"差分异常"分支——识别连续不确定后放手重来会重新确认
+  同一帧，日志里刷"差分异常（）"是误报。
+
 ## 待办
 
 1. `tools/watch_board.py` 还在用霍夫圆 + 逐格判占位，要么切到 `board_onnx`，要么删掉
@@ -326,3 +387,4 @@ JJ象棋 有「棋力评测」等非标准开局模式，所以这里只告警�
 5. 自动走子（当前只给建议，不落子）
 6. `hud.py` 目前只显示走法；`warn` 字段已写进 `suggestion.json`，可考虑在浮窗上显著标出
 7. 引擎目前每步都重新搜索，没有复用上一轮的结果；若响应还嫌慢可考虑后台线程搜索
+8. `hud.py` 还没显示"当前轮次 / 轮次是猜的"，中途接手时只能靠那一次 `warn` 提示

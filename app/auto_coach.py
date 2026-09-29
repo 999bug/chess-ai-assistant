@@ -57,7 +57,7 @@ import grid_classify as G
 import rules
 from applog import get_logger, install_excepthook
 from coach import (Engine, board_to_fen, engine_reason_text, move_to_chinese,
-                   move_to_ucci, parse_score)
+                   move_to_ucci, parse_score, ucci_to_rc)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)          # 代码在 app/ 下，上一级才是项目根
@@ -326,55 +326,131 @@ class Tune:
         return self.data[key]
 
 
+SIDE_LETTER = {"red": "R", "black": "B"}   # 我方颜色 -> 棋盘标签里的字头
+
+
+def other_letter(letter):
+    return "B" if letter == "R" else "R"
+
+
+def side_word(letter):
+    return "红方" if letter == "R" else "黑方"
+
+
+def fen_of(board, letter):
+    """盘面 + 轮次 -> FEN。轮次传字头（"R"/"B"）。"""
+    return board_to_fen(board, "red" if letter == "R" else "black")
+
+
+def resolve_turn(explicit, pos, me):
+    """定下"进场那一刻轮到谁走"，返回 (字头, 说明, 是不是猜的)。
+
+    为什么这是个真问题：对局打到一半才打开引擎时没有"上一帧"可比，起点 FEN
+    里那个"轮谁走"只能定出来。定错了不会打死引擎（FEN 标注和着法历史同源，
+    永远自洽），但会把对方该走的着法当建议给出来——比不给更糟。
+    所以：命令行显式指定 > 从局面推断（被将军的局面能判出来）> 默认我方。
+    """
+    if explicit in ("red", "black"):
+        return SIDE_LETTER[explicit], "命令行 --turn 指定", False
+    turn, why = rules.guess_turn(pos, me)
+    if turn:
+        return turn, why, False
+    return me, why + "，先按「我方走」处理", True
+
+
 class MoveTrack:
-    """维护"起点局面 + 之后走过的着法"，让引擎看得到对局历史。
+    """维护"起点局面（含轮次）+ 之后走过的着法"，让引擎看得到对局历史。
 
     为什么需要：只丢一个孤立 FEN，引擎不知道之前下过什么，就判断不了
     重复局面（三次重复算和棋）。结果该求和的盘它当优势继续磨，
     能逼和的时候又看不出来。
 
+    为什么要连轮次一起存：起点 FEN 里的"轮谁走"过去是**写死成我方**的，
+    于是"历史第一手归谁"也只能跟着写死。一旦差分把顺序排反（见
+    rules.explain_change 里那段说明），引擎就收到"标着红先、却先给黑着法"
+    的命令，判 Illegal move 之后**自己退出**。现在轮次是一个真实状态：
+    进场时推断或指定，之后每一手翻一次，FEN 标注和着法历史同源、不可能矛盾。
+
     安全第一：每次追加着法都会在本地重放一遍，只有重放结果与当前识别盘面
-    完全一致才接受；一旦对不上（识别抖动、差分解释错），就地重置为当前局面。
-    丢掉历史顶多少一个信息，把错的历史喂给引擎才是真出事——
-    引擎会基于一个不存在的局面给出建议。
+    完全一致、**且每一步都归该走的那一方**，才接受；一旦对不上就地重置为当前局面。
+    丢掉历史顶多少一个信息，把错的历史喂给引擎才是真出事。
     """
 
-    def __init__(self, start_fen, start_pos):
-        self.start_fen = start_fen
-        self.moves = []
-        self.pos = dict(start_pos)
-
-    def reset(self, fen, pos):
-        self.start_fen = fen
-        self.moves = []
+    def __init__(self, pos, turn="R", side="red"):
+        self.side = side                    # 我方颜色（"red"/"black"）
+        self.letter = SIDE_LETTER.get(side, "R")
+        self.turn = turn                    # 起点局面轮到谁走（"R"/"B"）
+        self.start_pos = dict(pos)
         self.pos = dict(pos)
+        self.moves = []
 
-    def push(self, seq, cur_pos, cur_fen):
-        """追加若干步着法。对不上就重置，返回是否成功保留历史。"""
+    def reset(self, pos, turn=None):
+        """以给定局面重新起头（turn 省略时沿用当前轮次）。"""
+        self.start_pos = dict(pos)
+        self.pos = dict(pos)
+        self.moves = []
+        if turn:
+            self.turn = turn
+
+    def expect_first(self):
+        """接下来该由谁走——即"当前"该谁走（历史偶数步 = 起点那一方）。"""
+        if len(self.moves) % 2 == 0:
+            return self.turn
+        return other_letter(self.turn)
+
+    def start_fen(self):
+        """起点 FEN。轮次字段跟着 self.turn 走，不写死。"""
+        return fen_of(self.start_pos, self.turn)
+
+    def push(self, seq, cur_pos):
+        """追加若干步着法。轮次或盘面对不上就重置，返回是否保留历史。"""
         work = dict(self.pos)
+        want = self.expect_first()
         for frm, to in seq:
             legal, _why = rules.move_legal(work, frm, to)
             if not legal:
-                self.reset(cur_fen, cur_pos)
+                self.reset(cur_pos)
+                return False
+            if work[frm][0] != want:     # 这一步不归它走 -> 轮次或识别有问题
+                self.reset(cur_pos)
                 return False
             work[to] = work.pop(frm)
+            want = other_letter(want)
         if work != cur_pos:
-            self.reset(cur_fen, cur_pos)
+            self.reset(cur_pos)
             return False
         self.moves.extend(move_to_ucci(f, t) for f, t in seq)
         self.pos = work
         return True
 
-    def position(self, cur_fen):
-        """返回交给引擎的 (起点 fen, 着法列表)。没历史时退化成孤立局面。"""
-        if not self.moves:
-            return cur_fen, []
-        return self.start_fen, self.moves
+    def history_turn_ok(self):
+        """重放整段历史，确认走子方是"起点那一方先、之后逐手交替"。
+
+        提问引擎之前的最后一道保险：就算真出问题，也只是把历史丢掉、退化成
+        孤立局面，绝不能把轮次错的历史送进去——引擎会拒收并把进程打死。
+        """
+        work = dict(self.start_pos)
+        for i, mv in enumerate(self.moves):
+            frm, to = ucci_to_rc(mv)
+            lab = work.get(frm)
+            want = self.turn if i % 2 == 0 else other_letter(self.turn)
+            if not lab or lab[0] != want:
+                return False
+            work[to] = work.pop(frm)
+        return True
+
+    def position(self):
+        """返回交给引擎的 (起点 FEN, 着法列表)。没历史时退化成孤立局面。"""
+        return self.start_fen(), list(self.moves)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--side", default="red", choices=["red", "black"])
+    ap.add_argument("--turn", default="auto", choices=["auto", "red", "black"],
+                    help="进场那一刻轮到谁走。默认 auto：从局面推断（被将军的"
+                         "局面判得出来），判不出就按我方走并提示。中途接手且"
+                         "局面平静时，用这个参数直接告诉它更准。")
     ap.add_argument("--movetime", type=int, default=None,
                     help="引擎每步思考毫秒数（默认 1000）")
     ap.add_argument("--depth", type=int, default=None,
@@ -585,33 +661,10 @@ def main():
             if problems:
                 ok = False
 
+            # ---- 守门员没过：这一帧不认账，连差分都不做 ----
+            # （过去是让差分流先跑完再 continue，于是一个说不通的盘面照样能
+            #   改动着法历史，甚至把轮次带偏。）
             fen_now = board_to_fen(board, args.side)
-
-            # ---- 差分：解释得了就是正常推进，顺带维护着法历史 ----
-            warn = ""
-            if last_board is None:
-                track = MoveTrack(fen_now, occ)
-            else:
-                kind, why, seq = rules.explain_change(
-                    last_board, board, tune["max_steps"])
-                if kind == "reset":
-                    print("  检测到新的一局（回到标准开局）")
-                    track = MoveTrack(fen_now, occ)
-                elif kind in ("one_move", "multi_move"):
-                    if track is None:
-                        track = MoveTrack(fen_now, occ)
-                    elif not track.push(seq, occ, fen_now):
-                        print("  着法历史与当前盘面对不上，已重置为当前局面")
-                    if kind == "multi_move":
-                        print("  {}（两次确认之间走了 {} 步，正常）".format(
-                            why, len(seq)))
-                else:
-                    warn = "识别可能不稳（{}），这一手请自行核对".format(why)
-                    print("  !! 差分异常: {}".format(why))
-                    log.warn("差分异常: {}｜本帧 {}｜上一帧 {}".format(
-                        why, fen_now, board_to_fen(last_board, args.side)))
-                    track = MoveTrack(fen_now, occ)
-
             if not ok:
                 bad_n += 1
                 rep.status("识别不确定（第 {} 次）：{}".format(
@@ -627,6 +680,62 @@ def main():
             bad_n = 0
             last_count = len(occ)
 
+            # ---- 差分：解释得了就是正常推进，顺带维护着法历史 ----
+            my_letter = SIDE_LETTER.get(args.side, "R")
+            warn = ""
+            if track is None:
+                # 首帧。中途进场时没有"上一帧"可比，"轮谁走"只能现定：
+                # 命令行 --turn > 从局面推断（被将军的局面判得出来）> 默认我方。
+                turn, why_turn, guessed = resolve_turn(
+                    args.turn, rules.pieces(board), my_letter)
+                track = MoveTrack(occ, turn, args.side)
+                print("  起始轮次：{}（{}）".format(side_word(turn), why_turn))
+                log.info("起始轮次 {}｜{}".format(side_word(turn), why_turn))
+                if guessed:
+                    # 猜的就得说清楚：轮次错了，浮窗给的是对方该走的着法，
+                    # 用户至少要能看出来，而不是被蒙在鼓里。
+                    warn = "轮次判不出来，先按「我方走」算；不对请加 --turn 指定"
+                    print("  !! {}".format(warn))
+            else:
+                prev_turn = track.expect_first()
+                kind, why, seq = rules.explain_change(
+                    last_board, board, tune["max_steps"], first_side=prev_turn)
+                if kind == "reset":
+                    print("  检测到新的一局（回到标准开局）")
+                    track = MoveTrack(occ, "R", args.side)   # 标准开局红先
+                elif kind in ("one_move", "multi_move"):
+                    if not track.push(seq, occ):
+                        print("  着法历史与当前盘面对不上，已重置为当前局面")
+                    if kind == "multi_move":
+                        print("  {}（两次确认之间走了 {} 步，正常）".format(
+                            why, len(seq)))
+                elif kind == "same":
+                    # 两帧一模一样。这不是异常——"识别连续不确定后放手重来"
+                    # 会重新确认同一帧——更不能因此把历史清掉。
+                    pass
+                else:
+                    # 差分解释不通。最可能的是**进场时轮次猜反了**：换一种轮次
+                    # 再试一次，成立就地纠正；否则才当识别抖动处理。
+                    alt_turn = other_letter(prev_turn)
+                    alt_kind, alt_why, alt_seq = rules.explain_change(
+                        last_board, board, tune["max_steps"], first_side=alt_turn)
+                    if alt_kind in ("one_move", "multi_move"):
+                        text = "起始轮次判错了，已按「{}先走」重新对齐".format(
+                            side_word(alt_turn))
+                        print("  !! {}".format(text))
+                        log.warn(text + "｜" + alt_why)
+                        track = MoveTrack(rules.pieces(last_board), alt_turn, args.side)
+                        track.push(alt_seq, occ)
+                    else:
+                        warn = "识别可能不稳（{}），这一手请自行核对".format(why)
+                        print("  !! 差分异常: {}".format(why))
+                        log.warn("差分异常: {}｜本帧 {}｜上一帧 {}".format(
+                            why, fen_of(board, prev_turn),
+                            fen_of(last_board, prev_turn)))
+                        track = MoveTrack(occ, prev_turn, args.side)
+
+            fen_now = fen_of(board, track.expect_first())
+
             # 第一次拿到稳定盘面时，严格比一次标准开局。
             # 静态校验只能查必要条件——一个 22 子的残盘（红方缺 2 车 2 马 2 炮）
             # 物理上完全可达，静态查不出来；唯一能拦住这类错误的时机就是开局帧。
@@ -636,9 +745,12 @@ def main():
                 if ok_start:
                     print("  起始盘面：标准开局 32 子")
                 else:
-                    warn = "起始盘面不是标准开局（{}），若是中途接手请忽略".format(
+                    # 接在中途进场的"轮次是猜的"后面，别把它顶掉——
+                    # 中途接手正好两条会同时出现，而轮次那条更要紧。
+                    text = "起始盘面不是标准开局（{}），若是中途接手请忽略".format(
                         "；".join(start_probs[:1]))
-                    print("  !! {}".format(warn))
+                    warn = warn + "；" + text if warn else text
+                    print("  !! {}".format(text))
             last_board = board
 
             # 在线积累：只有过了校验的局面才配进模板库（仅 template 后端需要，
@@ -649,17 +761,27 @@ def main():
                 except Exception as e:
                     print("  样本积累失败:", e)
 
-            start_fen, moves = track.position(fen_now)
+            start_fen, moves = track.position()
 
-            # 轮次检查：起点 FEN 标的是"我方走"，所以着法数是奇数就意味着
-            # 我方刚落子、现在轮到对方（AI 正在思考）。这时问引擎没有意义——
-            # 引擎会正确推断出该对方走，给出来的建议我方根本用不上。
-            # （老版本把 FEN 一律标成"我方走"，这种时刻就会给出一份
-            #   基于错误轮次的建议，比不给更糟。）
-            if len(moves) % 2 == 1:
+            # 轮次检查：只有"轮到我方走"才问引擎。轮到对方时问出来的着法
+            # 是对方该走的，我方用不上。过去这里靠"着法历史步数的奇偶"来判，
+            # 现在轮次是真实状态（中途进场也定得出来），直接看它更准。
+            if track.expect_first() != my_letter:
                 rep.status("轮对方走（我方已落子），等对方回招…", last_move)
                 time.sleep(interval)
                 continue
+
+            # ---- 最后一道保险：FEN 的轮次标注必须和历史首手同源 ----
+            # 只要两者一致，引擎就不可能判 Illegal move（它拒收的正是
+            # "标着红先、却先给黑着法"这种命令）。所以这里真出问题，代价
+            # 也只是白丢一段历史，绝不会再把 pikafish 打死一次。
+            if not track.history_turn_ok():
+                log.warn("着法历史轮次对不上，已丢弃历史｜起点 {}｜着法 {}".format(
+                    start_fen, " ".join(moves) or "（无）"))
+                rep.status("着法历史轮次异常，本轮按孤立局面求解",
+                           last_move, level="warn")
+                track = MoveTrack(occ, my_letter, args.side)
+                start_fen, moves = track.position()
 
             # ---- 轮次和盘面对不上：这种局面不给引擎 ----
             # 合法对局里"轮到我走"时对方不可能正被将军（对方被将军就必然
@@ -667,8 +789,7 @@ def main():
             # 识别有误。实测这种局面喂给 pikafish，它会打印一行 CRITICAL ERROR
             # 之后**自己退出**，于是后面每一问都失败，日志上只剩一串
             # "引擎没给着法"——根因被埋掉。先说清楚，别把引擎搞死。
-            bad, why = rules.king_capturable(
-                rules.pieces(board), "R" if args.side == "red" else "B")
+            bad, why = rules.king_capturable(rules.pieces(board), my_letter)
             if bad:
                 text = "局面与轮次不符（{}），已跳过".format(why)
                 log.warn(text + "｜FEN {}｜着法历史 {} 步".format(start_fen, len(moves)))

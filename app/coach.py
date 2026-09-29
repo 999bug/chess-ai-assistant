@@ -68,12 +68,18 @@ STRAIGHT = {"车", "炮", "兵", "卒", "帅", "将"}  # 直走：进退记步�
 
 
 def board_to_fen(board, turn="red"):
+    """{(行,列): 标签} 或 {(行,列): (标签, 分)} -> FEN 串。
+
+    两种取值都收得下：识别结果给的是 (标签, 分)，而着法历史里存的是纯标签
+    （历史要按"当时的轮次"重新拼 FEN，拿不到分数也不该卡在这）。
+    """
     rows = []
     for r in range(10):
         s, empty = "", 0
         for c in range(9):
-            lab = board.get((r, c), ("EMPTY", 0))[0]
-            if lab == "EMPTY":
+            v = board.get((r, c), "EMPTY")
+            lab = v[0] if isinstance(v, (tuple, list)) else v
+            if not lab or lab == "EMPTY":
                 empty += 1
             else:
                 if empty:
@@ -96,7 +102,12 @@ def ucci_to_rc(mv):
 
 
 def rc_to_ucci(r, c):
-    """(行,列) -> UCCI 坐标，如 (9,0) -> 'a9'。与 ucci_to_rc 互逆。"""
+    """(行,列) -> UCCI 坐标，如 (9,0) -> 'a0'（UCCI 行号 0 = 红方底线）。
+
+    注意引擎也是这个口径（排在第 0 行的是红方底线），所以
+    move_to_ucci / ucci_to_rc 和 pikafish 的着法能直接互换。
+    与 ucci_to_rc 互逆。
+    """
     return chr(ord('a') + int(c)) + str(9 - int(r))
 
 

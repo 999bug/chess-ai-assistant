@@ -141,6 +141,30 @@ def king_capturable(pos, side):
     return False, ""
 
 
+def guess_turn(pos, me):
+    """中途进场时，从局面本身推断"轮到谁走"。返回 (轮次 / None, 说明)。
+
+    为什么需要：对局打到一半才把引擎打开时，没有"上一帧"可比，起点 FEN 里
+    那个"轮谁走"就是猜的。猜错了不会打死引擎（FEN 标注和历史首手同源，永远
+    自洽），但会拿对方该走的着法当建议给出来，比不给更糟。
+
+    依据是合法局面留下的痕迹（判据和 king_capturable 一致）：
+      · 我方能吃到对方的将 -> 不可能轮到我方（对局里没人会走一步送将），
+                              所以现在轮**对方**走；
+      · 对方能吃到我方的将 -> 不可能轮到对方走（否则他上一手直接吃了），
+                              所以现在轮**我方**走（我方正被将军）；
+      · 两个都不成立       -> 平静局面，看不出轮次，返回 None 交给上层。
+    """
+    foe = "B" if me == "R" else "R"
+    bad, why = king_capturable(pos, me)
+    if bad:
+        return foe, "我方能吃到对方的将（{}），说明不是轮到我方走".format(why)
+    bad, why = king_capturable(pos, foe)
+    if bad:
+        return me, "对方能吃到我方的将（{}），说明轮到我方走".format(why)
+    return None, "将帅都不受攻击，从局面看不出轮次"
+
+
 def check_start(board):
     """这一局是不是从标准开局开始的。严格比对 32 子摆法。
 
@@ -331,7 +355,7 @@ def move_legal(pos, frm, to):
     return True, ""
 
 
-def explain_change(prev, cur, max_steps=3):
+def explain_change(prev, cur, max_steps=3, first_side=None):
     """比较相邻两帧的盘面，返回 (类型, 说明, 着法序列)。
 
     着法序列是 [((fx行,fy列), (tx行,ty列)), ...]，可以用它把对局历史喂给引擎
@@ -352,6 +376,16 @@ def explain_change(prev, cur, max_steps=3):
     为什么要单独处理吃子：被吃的那个子在两帧里"同位置但换了主人"，
     会**同时**被算进两侧的差异，于是最普通的一步吃子会变成 2:1 而判成异常。
     所以先把这类格子摘出来——它属于"被吃"，不是"走子"。
+
+    为什么还要 first_side（2026-09-29 实测的坑）：`move_legal` 只判几何形状，
+    不看轮到谁走。两步**互不相干**的走子（不互吃、路径不冲突）正反两种顺序
+    在几何上都成立，于是下面那句 `permutations` 会取到遍历顺序决定的那个，
+    也就是行号小的那个——黑方子力普遍靠上，于是"黑先红后"。
+    实测这样喂给 pikafish 是
+        info string CRITICAL ERROR: ... Reason: Illegal move: h7f7
+    然后进程**自己退出**。所以给了 first_side（"R"/"B"）就只接受
+    "首手归它、之后逐手交替"的排列；一条都排不出来时返回 noisy，
+    让上层去决定是纠正轮次还是丢掉历史——绝不能就这么送进引擎。
     """
     p, q = pieces(prev), pieces(cur)
     if p == q:
@@ -376,25 +410,48 @@ def explain_change(prev, cur, max_steps=3):
         return "noisy", "一次动了 {} 处（上限 {} 步）".format(
             len(movers), max_steps), []
 
-    # 枚举"谁走到了哪里"。步数很少（≤3），配对空间是阶乘级但极小，直接穷举最可靠。
+    # 枚举"谁走到哪里"和"谁先谁后"，两者都要穷举。
+    #
+    # 顺序为什么也得枚举（2026-09-29 的坑）：原先只重排"目的地"，走子的先后
+    # 等于 `movers` 的遍历顺序，也就是盘面的行优先顺序。两步互不相干的走子
+    # 谁先谁后都合法，于是"先后"就由行号决定了——黑方子力普遍靠上，
+    # 结果**黑方那一手永远排在前面**，标着红先的 FEN 配黑先的着法，
+    # 引擎判 Illegal move 后自杀退出。
+    #
+    # 步数很少（≤3），配对 × 顺序最多 3!×3! = 36 种，直接穷举最可靠。
+    # 顺序的第一个排列就是原来的遍历顺序，所以不给 first_side 时结果与旧版一致。
+    n = len(movers)
     for perm in itertools.permutations(came):
-        work = dict(p)
-        seq, ok = [], True
-        for frm, to in zip(movers, perm):
-            legal, _why = move_legal(work, frm, to)
-            if not legal:
-                ok = False
-                break
-            work[to] = work.pop(frm)     # 逐走着法，后一步要在前一步之后的盘面上判定
-            seq.append((frm, to))
-        if not ok or work != q:          # 重放完必须与目标盘面完全一致
-            continue
-        if len(seq) == 1:
-            frm, to = seq[0]
-            return "one_move", "{} {}->{}".format(p[frm], frm, to), seq
-        return "multi_move", "{} 步：{}".format(
-            len(seq), "，".join("{} {}->{}".format(p[f], f, t) for f, t in seq)), seq
+        for order in itertools.permutations(range(n)):
+            work = dict(p)
+            seq, ok = [], True
+            want = first_side
+            for i in order:
+                frm, to = movers[i], perm[i]
+                legal, _why = move_legal(work, frm, to)
+                if not legal:
+                    ok = False
+                    break
+                # 轮次也要对上：起点 FEN 标的是哪一方先走，第一手就得归那一方
+                if want and work[frm][0] != want:
+                    ok = False
+                    break
+                work[to] = work.pop(frm)   # 逐走着法，后一步要在前一步之后的盘面上判定
+                seq.append((frm, to))
+                if want:
+                    want = "B" if want == "R" else "R"
+            if not ok or work != q:        # 重放完必须与目标盘面完全一致
+                continue
+            if len(seq) == 1:
+                frm, to = seq[0]
+                return "one_move", "{} {}->{}".format(p[frm], frm, to), seq
+            return "multi_move", "{} 步：{}".format(
+                len(seq), "，".join("{} {}->{}".format(p[f], f, t)
+                                    for f, t in seq)), seq
 
+    if first_side is not None:
+        return "noisy", "变化能用 ≤{} 步解释，但轮次对不上（该{}先走）".format(
+            max_steps, "红方" if first_side == "R" else "黑方"), []
     if len(movers) == 1:
         frm, to = movers[0], came[0]
         _legal, why = move_legal(p, frm, to)
@@ -403,9 +460,9 @@ def explain_change(prev, cur, max_steps=3):
         len(movers) + len(eaten), max_steps), []
 
 
-def diff(prev, cur, max_steps=3):
+def diff(prev, cur, max_steps=3, first_side=None):
     """只要 (类型, 说明) 的便捷入口，保持旧调用方式可用。"""
-    kind, why, _seq = explain_change(prev, cur, max_steps)
+    kind, why, _seq = explain_change(prev, cur, max_steps, first_side)
     return kind, why
 
 
