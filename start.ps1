@@ -19,9 +19,9 @@
 param(
     [ValidateSet("red", "black")]
     [string]$Side = "red",          # 你执红还是执黑
-    [int]$Movetime = 1000,          # 引擎每步思考毫秒数（推荐，比 Depth 划算得多）
+    [int]$Movetime = 3000,          # 引擎每步思考毫秒数（实测 3000ms 约到深度 22，1000ms 只有 18）
     [int]$Depth = 0,                # >0 时改用固定深度。pikafish 的 depth 很浅，一般别用
-    [int]$HashMB = 512,             # 引擎哈希表 MB（引擎默认只有 16）
+    [int]$HashMB = 1024,            # 引擎哈希表 MB（引擎默认只有 16；实测 512 已饱和，再大不涨）
     [int]$Threads = 0,              # 引擎线程数，0 = 按 CPU 核数自动
     [double]$Interval = 0.25,       # 采样间隔秒
     [int]$Stable = 2,               # 画面连续稳定几帧才认定局面

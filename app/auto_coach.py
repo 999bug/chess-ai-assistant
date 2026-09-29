@@ -151,22 +151,22 @@ class Tune:
     为了调个思考时间还要 Ctrl+C 重开一遍，谁都不乐意调。
     放文件里，对局中途改一行保存，下一轮就应用上了。
 
-    清单：
-      movetime  每步思考毫秒数（默认 1000）
+    清单（括号里是在 i7-11700 / 16 线程这台机器上实测挑出来的值）：
+      movetime  每步思考毫秒数（3000：中局约到深度 22；1000 只有 18）
       depth     给了就改用固定深度。注意 pikafish 的 depth 很浅，一般别用
-      hash_mb   引擎哈希表 MB（引擎自带默认只有 16，会限制搜索质量）
+      hash_mb   引擎哈希表 MB（1024。实测 512 已到饱和点，再大不涨；但引擎默认只有 16，必须设）
       threads   引擎线程数，null = 按 CPU 核数自动
-      interval  采样间隔秒（默认 0.25）
-      stable    画面连续稳定几帧才认定局面（默认 2）
-      sig_thr   判定"画面变了"的差异像素占比阈值（标定见上面 SIG_SIZE 那段注释）
+      interval  采样间隔秒（0.25）
+      stable    画面连续稳定几帧才认定局面（2）
+      sig_thr   判定"画面变了"的差异像素占比阈值
       force_after  画面持续变化多久后不再等稳定、强行按当前帧定案（秒）
       max_steps 差分最多用几步合法着法解释
     """
 
     DEFAULTS = {
-        "movetime": 1000,
+        "movetime": 3000,
         "depth": None,
-        "hash_mb": 512,
+        "hash_mb": 1024,
         "threads": None,
         "interval": 0.25,
         "stable": 2,

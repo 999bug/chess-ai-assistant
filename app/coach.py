@@ -269,11 +269,11 @@ def parse_score(info):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--side", default="red", choices=["red", "black"])
-    ap.add_argument("--movetime", type=int, default=1000,
-                    help="每步思考毫秒数（默认 1000；比 depth 划算得多）")
+    ap.add_argument("--movetime", type=int, default=3000,
+                    help="每步思考毫秒数（默认 3000，实测中局约到深度 22）")
     ap.add_argument("--depth", type=int, default=None,
                     help="搜到该深度就停。pikafish 的 depth 很浅（14 只要 0.05 秒），一般别用")
-    ap.add_argument("--hash", type=int, default=512, help="哈希表大小 MB")
+    ap.add_argument("--hash", type=int, default=1024, help="哈希表大小 MB")
     ap.add_argument("--threads", type=int, default=None, help="引擎线程数，默认按 CPU 核数自动")
     ap.add_argument("--snapshot", default=None)
     ap.add_argument("--no-engine", action="store_true", help="只出 FEN，不问引擎")
