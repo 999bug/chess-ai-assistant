@@ -20,6 +20,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "app"))
 
 import auto_coach as A
+import coach
 import rules
 
 FAIL = []
@@ -134,6 +135,38 @@ check("我方被将军 -> 判出轮我方走",
 # 我方能吃到对方的将 -> 不可能轮我方（对局里没人走一步送将）
 check("对方被将军 -> 判出轮对方走",
       rules.guess_turn({(9, 4): "R帥", (5, 4): "R車", (0, 4): "B將"}, "R")[0], "B")
+
+print("\n=== push：走完不能让自己的将被吃（引擎的 pos.legal 也查这个）===")
+# 线上就是这么翻车的：rules.move_legal 只查形状，放行了"送将"的着法，
+# 拼进 position fen … moves … 之后被 pikafish 拒收
+#   CRITICAL ERROR: … Reason: Illegal move: h0h7
+# 然后引擎自己退出；就算不退出，历史也会被它静默截断，
+# 于是引擎停在很早的局面上，给出的着法起点和当前帧对不上，
+# 中文记谱翻不出来、原样露出 h0h7 这种 UCCI 坐标。
+exposed = {
+    (9, 4): "R帥",
+    (8, 4): "R仕",
+    (5, 4): "B車",      # 黑车就在同一列，全靠 (8,4) 的仕挡着
+    (0, 4): "B將",
+}
+tr_unsafe = A.MoveTrack(dict(exposed), "R", "red")
+after = dict(exposed)
+after[(7, 5)] = after.pop((8, 4))        # 仕斜走一步，把帅暴露给黑车
+check("送将的着法被拒", tr_unsafe.push([((8, 4), (7, 5))], after), False)
+check("拒绝后历史为空（退化成孤立局面，不会喂错）", len(tr_unsafe.moves), 0)
+
+# 反过来：正常着法不能被误杀
+tr_safe = A.MoveTrack(dict(rules.SETUP), "R", "red")
+p_ok = dict(rules.SETUP)
+p_ok[(7, 4)] = p_ok.pop((7, 7))           # 红炮 7,7 -> 7,4
+check("正常的着法仍然被接受（别收紧过头）", tr_safe.push([((7, 7), (7, 4))], p_ok), True)
+check("历史正常累积", tr_safe.moves, ["h2e2"])
+
+print("\n=== move_to_chinese：起点没棋子时要明确标出来 ===")
+tiny = {(9, 4): ("R帥", 1.0), (0, 4): ("B將", 1.0)}
+check("起点有子 -> 正常中文记谱", coach.move_to_chinese(tiny, "e0e1"), "帅五进一")
+# 原样返回 UCCI 会让人以为这是一条正常建议，实际根本对不上棋盘
+check("起点没子 -> 标注成「？（坐标）」", coach.move_to_chinese(tiny, "h0h7"), "？（h0h7）")
 
 print()
 if FAIL:

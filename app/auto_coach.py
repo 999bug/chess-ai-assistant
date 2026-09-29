@@ -197,6 +197,12 @@ def ask_engine(eng, start_fen, moves, tune, log, retries=1):
     mv, info = ask()
     if mv or eng.reason in (Engine.NO_MOVE, Engine.INVALID, Engine.EMPTY):
         if eng.reason == Engine.INVALID:
+            # 把引擎抱怨的原文记下来。它说的正是"哪条命令、哪一步着法不合法"，
+            # 这是判断"喂进去的着法历史有问题"的唯一凭据——不记的话，日志上
+            # 只看得到一句"引擎没给着法"，根因被埋掉。
+            log.warn("引擎拒收本次提问｜{}｜FEN {}｜着法历史 {}".format(
+                "｜".join(eng.diag) or "（引擎没给说明）", start_fen,
+                " ".join(moves) or "（无）"))
             eng.restart("上一问被引擎拒收局面，进程已退出")
         return mv, info
 
@@ -520,7 +526,21 @@ class MoveTrack:
             if work[frm][0] != want:     # 这一步不归它走 -> 轮次或识别有问题
                 self.reset(cur_pos)
                 return False
+            mover = work[frm][0]
             work[to] = work.pop(frm)
+            # 引擎的 pos.legal 除了形状还会查"走后自己不能被将军"，而
+            # rules.move_legal 只做形状检查（它自己的注释就写着"不查将军/自将"）。
+            # 于是差分推出来的着法链可能被引擎拒收——实测那样 pikafish 会打印
+            #   CRITICAL ERROR: Command `position fen … moves …` failed.
+            #                   Reason: Illegal move: h0h7
+            # 然后**自己退出**；就算没退出，着法历史也会被它静默截断，
+            # 引擎于是停在很早的局面上，给出的着法起点和当前帧对不上，
+            # 中文记谱翻不出来、原样露出 `h0h7` 这种 UCCI 坐标。
+            # 所以这里也按引擎的标准过一遍：走完不能让自己的将处于被吃状态。
+            unsafe, _why2 = rules.king_capturable(work, other_letter(mover))
+            if unsafe:
+                self.reset(cur_pos)
+                return False
             want = other_letter(want)
         if work != cur_pos:
             self.reset(cur_pos)

@@ -168,7 +168,11 @@ def move_to_chinese(board, mv):
     (fr, fc), (tr, tc) = ucci_to_rc(mv)
     lab = board.get((fr, fc), ("EMPTY", 0))[0]
     if lab == "EMPTY":
-        return mv
+        # 起点格上没有棋子：要么识别漏了子，要么引擎看的局面和这一帧不是同一个
+        # （着法历史被引擎截断就会这样，见 auto_coach.MoveTrack.push 的说明）。
+        # **不能原样返回 UCCI**——`h0h7` 看着像一条正常建议，实际根本对不上
+        # 棋盘，照着走就是走错棋。标出来，让人一眼知道这手不可信。
+        return "？（{}）".format(mv)
     side, piece_ch = lab[0], lab[1:]
     name = NAME_MAP.get((side, piece_ch), piece_ch)
 
