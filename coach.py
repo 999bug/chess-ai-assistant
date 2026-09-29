@@ -35,6 +35,16 @@ import rules
 HERE = os.path.dirname(os.path.abspath(__file__))
 ENGINE = os.path.join(HERE, "engine", "pikafish.exe")
 
+
+def default_threads():
+    """引擎默认线程数：留一半核给别的进程，上限 8。
+
+    识别（ONNX）和引擎是同机跑的，把核全占满反而互相拖慢。
+    实测这台 16 核机器上引擎单线程 nps 约 90 万、8 线程约 420 万，
+    再往上收益就很小了。
+    """
+    return max(1, min((os.cpu_count() or 4) // 2, 8))
+
 # 识别标签 -> FEN 字母（大写红、小写黑）
 FEN_MAP = {
     ("B", "車"): "r", ("B", "馬"): "n", ("B", "象"): "b", ("B", "士"): "a",
@@ -81,6 +91,16 @@ def ucci_to_rc(mv):
     return (9 - fr, f), (9 - tr, t)
 
 
+def rc_to_ucci(r, c):
+    """(行,列) -> UCCI 坐标，如 (9,0) -> 'a9'。与 ucci_to_rc 互逆。"""
+    return chr(ord('a') + int(c)) + str(9 - int(r))
+
+
+def move_to_ucci(frm, to):
+    """((行,列), (行,列)) -> 'a9a8'。给引擎喂着法历史时用。"""
+    return rc_to_ucci(*frm) + rc_to_ucci(*to)
+
+
 def move_to_chinese(board, mv):
     """UCCI 着法 -> 中文记谱，如 '炮二平五'。"""
     (fr, fc), (tr, tc) = ucci_to_rc(mv)
@@ -122,15 +142,21 @@ def move_to_chinese(board, mv):
 
 
 class Engine:
-    """极简 UCCI 客户端。"""
+    """极简 UCI 客户端（pikafish 走的是 UCI，不是 UCCI）。"""
 
-    def __init__(self, path=ENGINE):
+    def __init__(self, path=ENGINE, hash_mb=512, threads=None):
         if not os.path.exists(path):
             raise FileNotFoundError(f"引擎不存在: {path}")
         self.p = subprocess.Popen([path], stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                   text=True, bufsize=1,
                                   encoding="utf-8", errors="replace")
+        # 引擎自带的默认值完全不够用：Hash 只有 16MB、Threads 只有 1。
+        # 实测改成 512MB + 8 线程后 nps 从 90 万涨到 420 万。
+        self.hash_mb = int(hash_mb)
+        self.threads = int(threads) if threads else default_threads()
+        self._sent_hash = None      # 已下发的值，避免重复发（改 Hash 会清空哈希表）
+        self._sent_threads = None
 
     def send(self, cmd):
         self.p.stdin.write(cmd + "\n")
@@ -154,16 +180,54 @@ class Engine:
         # 实测就是这样，别再写错
         self.send("uci")
         self.wait_for("uciok")
-        self.send("setoption name Threads value 4")
+        self.apply_options()
+
+    def apply_options(self, hash_mb=None, threads=None):
+        """下发引擎选项。运行期随时可调，不需要重启进程。
+
+        Hash 改大小会连带清空哈希表，所以只在数值真的变了时才发。
+        """
+        if hash_mb is not None:
+            self.hash_mb = int(hash_mb)
+        if threads is not None:
+            self.threads = int(threads)
+        if self.threads != self._sent_threads:
+            self.send("setoption name Threads value {}".format(self.threads))
+            self._sent_threads = self.threads
+        if self.hash_mb != self._sent_hash:
+            self.send("setoption name Hash value {}".format(self.hash_mb))
+            self._sent_hash = self.hash_mb
         self.send("isready")
         self.wait_for("readyok")
 
-    def bestmove(self, fen, depth=12, movetime=None):
-        self.send(f"position fen {fen}")
-        cmd = f"go depth {depth}" if movetime is None else f"go movetime {movetime}"
+    def bestmove(self, fen, depth=None, movetime=None, moves=None):
+        """问引擎要一手。
+
+        depth / movetime：movetime 优先。**推荐用 movetime**——
+        pikafish 的 `go depth N` 是"搜到 N 层就收工"，实测 depth 14 只要
+        0.05 秒、depth 20 要 1.05 秒，而同样 1 秒走 movetime 能到 23 层。
+        把 depth 当强度旋钮会让引擎刚热完身就交卷。
+
+        moves：起点局面之后的着法序列（UCCI）。带上它引擎才知道实际下过
+        哪些棋，从而识别重复局面；只丢一个孤立 FEN 的话，引擎判不了
+        长将/循环，可能把必和盘面算成优势。
+        """
+        if moves:
+            self.send("position fen {} moves {}".format(fen, " ".join(moves)))
+        else:
+            self.send("position fen {}".format(fen))
+
+        if movetime:
+            cmd, budget = "go movetime {}".format(int(movetime)), \
+                max(20.0, int(movetime) / 1000.0 * 10)
+        elif depth:
+            cmd, budget = "go depth {}".format(int(depth)), 60.0
+        else:
+            cmd, budget = "go movetime 1000", 20.0
         self.send(cmd)
+
         info = []
-        end = time.time() + 60
+        end = time.time() + budget
         while time.time() < end:
             line = self.p.stdout.readline()
             if not line:
@@ -204,8 +268,12 @@ def parse_score(info):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--side", default="red", choices=["red", "black"])
-    ap.add_argument("--depth", type=int, default=12)
-    ap.add_argument("--movetime", type=int, default=None)
+    ap.add_argument("--movetime", type=int, default=1000,
+                    help="每步思考毫秒数（默认 1000；比 depth 划算得多）")
+    ap.add_argument("--depth", type=int, default=None,
+                    help="搜到该深度就停。pikafish 的 depth 很浅（14 只要 0.05 秒），一般别用")
+    ap.add_argument("--hash", type=int, default=512, help="哈希表大小 MB")
+    ap.add_argument("--threads", type=int, default=None, help="引擎线程数，默认按 CPU 核数自动")
     ap.add_argument("--snapshot", default=None)
     ap.add_argument("--no-engine", action="store_true", help="只出 FEN，不问引擎")
     ap.add_argument("--backend", default="onnx", choices=["onnx", "template"],
@@ -254,14 +322,18 @@ def main():
         return 0
 
     try:
-        eng = Engine()
+        eng = Engine(hash_mb=args.hash, threads=args.threads)
         eng.init()
     except FileNotFoundError as e:
         print(f"\n!! {e}")
         print("   引擎还没就位，先用 --no-engine 看 FEN")
         return 1
 
-    mv, info = eng.bestmove(fen, depth=args.depth, movetime=args.movetime)
+    print(f"引擎: Hash {eng.hash_mb}MB / Threads {eng.threads}")
+    if args.depth:
+        mv, info = eng.bestmove(fen, depth=args.depth)
+    else:
+        mv, info = eng.bestmove(fen, movetime=args.movetime)
     eng.quit()
     if not mv:
         print("!! 引擎没给着法")
@@ -272,8 +344,10 @@ def main():
     print(f"\n{'='*40}")
     print(f"建议（{'红' if args.side=='red' else '黑'}方）：{cn}    [{mv}]")
     if sc is not None:
-        red_view = sc if args.side == "red" else -sc
-        print(f"引擎评分：{sc/100:+.2f}（正数{'红' if args.side=='red' else '黑'}优）  深度 {d}")
+        # UCI 的 score cp 以"轮到走的一方"为视角；我们的 FEN 始终标成自己执的一方，
+        # 所以正数就是自己占优，不需要再按执方翻转（原来那句 red_view 算了没用上）。
+        print("引擎评分：{:+.2f}（正数{}方优）  深度 {}".format(
+            sc / 100, "红" if args.side == "red" else "黑", d))
     print("=" * 40)
     return 0
 

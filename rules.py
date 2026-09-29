@@ -20,6 +20,7 @@ grid_classify.validate_board 只会查「子力数量上限 + 士象将的位置
 """
 import argparse
 import io
+import itertools
 import json
 import os
 import sys
@@ -297,41 +298,82 @@ def move_legal(pos, frm, to):
     return True, ""
 
 
-def diff(prev, cur, red_thr=None, black_thr=None):
-    """比较相邻两帧的盘面，判断变化能否用一个合法着法解释。
+def explain_change(prev, cur, max_steps=3):
+    """比较相邻两帧的盘面，返回 (类型, 说明, 着法序列)。
 
-    返回 (类型, 说明)。类型：
-        'same'      没有变化
-        'reset'     回到了标准开局（重开一局）
-        'one_move'  恰好一个合法着法（含吃子）
-        'noisy'     变化无法用一个着法解释——多半是识别抖动或走子动画中间态
+    着法序列是 [((fx行,fy列), (tx行,ty列)), ...]，可以用它把对局历史喂给引擎
+    （引擎要看到着法才判得了重复局面）。没有变化或解释不了时返回空列表。
+
+    类型：
+        'same'       没有变化
+        'reset'      回到了标准开局（重开一局）
+        'one_move'   恰好一个合法着法（含吃子）
+        'multi_move' 能用 2~max_steps 步合法着法解释——这是**正常情况**，不是异常
+        'noisy'      解释不了——才真的可疑（识别抖动或走子动画中间态）
+
+    为什么允许"多步"：管道确认一次盘面要好几秒（采样间隔 + 推理 + 连续帧确认），
+    而正常对局里双方各走一步只要 2~3 秒。也就是说管道眼里的"相邻两帧"，
+    实际上经常跨了 2 步棋（我方一步 + 对方一步）。老版本硬要求"恰好一步"，
+    结果只要棋局在正常推进就必然误报，把正常对局一直说成"对不上"。
+
+    为什么要单独处理吃子：被吃的那个子在两帧里"同位置但换了主人"，
+    会**同时**被算进两侧的差异，于是最普通的一步吃子会变成 2:1 而判成异常。
+    所以先把这类格子摘出来——它属于"被吃"，不是"走子"。
     """
     p, q = pieces(prev), pieces(cur)
     if p == q:
-        return "same", ""
+        return "same", "", []
 
     if dict(q) == SETUP:
-        return "reset", "回到标准开局"
+        return "reset", "回到标准开局", []
 
     gone = [k for k in p if p.get(k) != q.get(k)]
-    added = [k for k in q if q.get(k) != p.get(k)]
+    came = [k for k in q if q.get(k) != p.get(k)]
 
-    # 正常走子：起点消失、终点出现
-    if len(gone) == 1 and len(added) == 1:
-        frm, to = gone[0], added[0]
-        ok, why = move_legal(p, frm, to)
-        if ok:
-            return "one_move", f"{p[frm]} {frm}->{to}"
-        return "noisy", f"{p[frm]} {frm}->{to} 不合法（{why}）"
+    # 被吃的子：同位置在两侧都出现、且颜色不同
+    eaten = [k for k in gone if k in came and p[k][0] != q[k][0]]
+    movers = [k for k in gone if k not in eaten]
 
-    # 退化情况：只是某格"消失"或"出现"，都是识别抖动
-    if len(gone) == 1 and not added:
-        return "noisy", f"{gone[0]} 的 {p[gone[0]]} 凭空消失"
-    if len(added) == 1 and not gone:
-        return "noisy", f"{added[0]} 凭空多出 {q[added[0]]}"
-    if len(gone) > 1 or len(added) > 1:
-        return "noisy", f"一次动了 {len(gone)} 处（应为 1 处）"
-    return "noisy", "变化无法解释"
+    if not movers and not came:
+        return "noisy", "只有子力被吃、没有任何子移动", []
+    if len(movers) != len(came):
+        return "noisy", "消失 {} 处、出现 {} 处，对不上".format(
+            len(movers), len(came)), []
+    if len(movers) > max_steps:
+        return "noisy", "一次动了 {} 处（上限 {} 步）".format(
+            len(movers), max_steps), []
+
+    # 枚举"谁走到了哪里"。步数很少（≤3），配对空间是阶乘级但极小，直接穷举最可靠。
+    for perm in itertools.permutations(came):
+        work = dict(p)
+        seq, ok = [], True
+        for frm, to in zip(movers, perm):
+            legal, _why = move_legal(work, frm, to)
+            if not legal:
+                ok = False
+                break
+            work[to] = work.pop(frm)     # 逐走着法，后一步要在前一步之后的盘面上判定
+            seq.append((frm, to))
+        if not ok or work != q:          # 重放完必须与目标盘面完全一致
+            continue
+        if len(seq) == 1:
+            frm, to = seq[0]
+            return "one_move", "{} {}->{}".format(p[frm], frm, to), seq
+        return "multi_move", "{} 步：{}".format(
+            len(seq), "，".join("{} {}->{}".format(p[f], f, t) for f, t in seq)), seq
+
+    if len(movers) == 1:
+        frm, to = movers[0], came[0]
+        _legal, why = move_legal(p, frm, to)
+        return "noisy", "{} {}->{} 不合法（{}）".format(p[frm], frm, to, why), []
+    return "noisy", "{} 处变化无法用 ≤{} 步合法着法解释".format(
+        len(movers) + len(eaten), max_steps), []
+
+
+def diff(prev, cur, max_steps=3):
+    """只要 (类型, 说明) 的便捷入口，保持旧调用方式可用。"""
+    kind, why, _seq = explain_change(prev, cur, max_steps)
+    return kind, why
 
 
 def main():

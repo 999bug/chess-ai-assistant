@@ -2,7 +2,8 @@
 #
 # 用法：
 #   powershell -ExecutionPolicy Bypass -File .\start.ps1
-#   powershell -ExecutionPolicy Bypass -File .\start.ps1 -Side black -Depth 18
+#   powershell -ExecutionPolicy Bypass -File .\start.ps1 -Side black -Movetime 1500
+#   powershell -ExecutionPolicy Bypass -File .\start.ps1 -Depth 20      # 想固定深度时
 #
 # 它会：
 #   1. 清掉上次可能残留的进程
@@ -11,10 +12,19 @@
 #   4. 启动后台识别 + 置顶浮窗
 #   5. 关闭浮窗窗口 -> 自动停止全部进程
 #
+# 关于引擎强度（2026-09-29 实测）：
+#   pikafish 的 `go depth N` 是"搜到 N 层就收工"，depth 14 只要 0.05 秒，
+#   等于没搜；而 movetime 1000ms 能到深度 23。所以默认用 -Movetime。
+#   另外引擎自带的 Hash 只有 16MB、Threads 只有 1，都太小，这里补上默认值。
 param(
     [ValidateSet("red", "black")]
     [string]$Side = "red",          # 你执红还是执黑
-    [int]$Depth = 14,               # 引擎搜索深度，越大越慢越准
+    [int]$Movetime = 1000,          # 引擎每步思考毫秒数（推荐，比 Depth 划算得多）
+    [int]$Depth = 0,                # >0 时改用固定深度。pikafish 的 depth 很浅，一般别用
+    [int]$HashMB = 512,             # 引擎哈希表 MB（引擎默认只有 16）
+    [int]$Threads = 0,              # 引擎线程数，0 = 按 CPU 核数自动
+    [double]$Interval = 0.25,       # 采样间隔秒
+    [int]$Stable = 2,               # 画面连续稳定几帧才认定局面
     [ValidateSet("onnx", "template")]
     [string]$Backend = "onnx",      # 识别后端：onnx=整板分类（默认），template=老的模板匹配
     [switch]$NoLearn                # 关闭在线样本积累（仅 template 后端有效）
@@ -129,8 +139,12 @@ Say ""
 # ---------- 3. 启动 ----------
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }
 
-$coachArgs = @("auto_coach.py", "--side", $Side, "--depth", $Depth, "--backend", $Backend)
-if ($NoLearn) { $coachArgs += "--no-learn" }
+$coachArgs = @("auto_coach.py", "--side", $Side, "--backend", $Backend,
+               "--movetime", "$Movetime", "--interval", "$Interval", "--stable", "$Stable")
+if ($Depth -gt 0)   { $coachArgs += @("--depth", "$Depth") }
+if ($HashMB -gt 0)  { $coachArgs += @("--hash-mb", "$HashMB") }
+if ($Threads -gt 0) { $coachArgs += @("--threads", "$Threads") }
+if ($NoLearn)       { $coachArgs += "--no-learn" }
 
 $log  = Join-Path $OutDir "coach.log"
 $errl = Join-Path $OutDir "coach.err.log"
@@ -150,9 +164,15 @@ $hud = Start-Process -FilePath $uiPy -ArgumentList "hud.py" `
 
 Say ""
 Say "已启动（识别后端 $Backend）。" "Green"
+if ($Depth -gt 0) {
+    Say "  · 引擎：固定深度 $Depth（pikafish 的 depth 很浅，想要棋力请改用 -Movetime）" "Yellow"
+} else {
+    Say "  · 引擎：每步思考 $Movetime ms，Hash $HashMB MB" "White"
+}
 Say "  · 浮窗在屏幕右上角，可拖动，按 Esc 或关闭窗口即停" "White"
 Say "  · 认不准时它显示「识别不确定」，不会乱出招" "White"
-Say "  · 盘面与上一手对不上时会在浮窗上提示核对" "White"
+Say "  · 轮对方走时它会说明，不会给出用不上的建议" "White"
+Say "  · 想临时调参数：改 out\tune.json 保存即可，下一轮生效，不用重启" "White"
 Say ""
 Say "（关闭浮窗窗口，这里会自动收尾）" "DarkGray"
 

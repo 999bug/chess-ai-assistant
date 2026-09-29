@@ -85,8 +85,10 @@ class Hud:
                     self.lbl_move.config(text=mv.get("cn", "?"))
                     sc = mv.get("score")
                     if sc is not None:
+                        # 引擎评分以"我方"为视角（FEN 一直标成我方走）
                         self.lbl_score.config(
-                            text="评分 {:+.2f}    深度 {}".format(sc / 100, mv.get("depth")))
+                            text="我方 {:+.2f}    深度 {}".format(
+                                sc / 100, mv.get("depth")))
                     else:
                         self.lbl_score.config(text="")
             st = data.get("status", "")
@@ -94,7 +96,9 @@ class Hud:
                 self.lbl_status.config(text=st, fg=MUTED)
             elif mv:
                 self.lbl_status.config(
-                    text="[{}]   盘面 {} 子".format(mv.get("mv", ""), mv.get("n", "")),
+                    text="[{}]  深度 {}  ·  {} 子  ·  历史 {} 步".format(
+                        mv.get("mv", ""), mv.get("depth", "?"), mv.get("n", ""),
+                        mv.get("history", 0)),
                     fg=MUTED)
         self.root.after(400, self.tick)
 
