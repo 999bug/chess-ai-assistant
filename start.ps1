@@ -4,6 +4,7 @@
 #   powershell -ExecutionPolicy Bypass -File .\start.ps1
 #   pwsh -File .\start.ps1 -Side black -Movetime 1500
 #   powershell -ExecutionPolicy Bypass -File .\start.ps1 -Depth 20      # 想固定深度时
+#   pwsh -File .\start.ps1 -Turn black    # 中途接手，进场那一刻轮黑方走（省一次推断）
 #
 # 它会：
 #   1. 清掉上次可能残留的进程
@@ -19,6 +20,10 @@
 param(
     [ValidateSet("red", "black")]
     [string]$Side = "red",          # 你执红还是执黑
+    # 进场那一刻轮到谁走。auto = 自己推（被将军的局面 / 标准开局都推得出来），
+    # 推不出就先不出招、等一手落子自动认。中途接手且局面平静时指定它更省事。
+    [ValidateSet("auto", "red", "black")]
+    [string]$Turn = "auto",
     [int]$Movetime = 3000,          # 引擎每步思考毫秒数（实测 3000ms 约到深度 22，1000ms 只有 18）
     [int]$Depth = 0,                # >0 时改用固定深度。pikafish 的 depth 很浅，一般别用
     [int]$HashMB = 1024,            # 引擎哈希表 MB（引擎默认只有 16；实测 512 已饱和，再大不涨）
@@ -230,7 +235,8 @@ if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out
 $LogDir = Join-Path $Proj "log"
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
 
-$coachArgs = @("app\auto_coach.py", "--side", $Side, "--backend", $Backend,
+$coachArgs = @("app\auto_coach.py", "--side", $Side, "--turn", $Turn,
+               "--backend", $Backend,
                "--movetime", "$Movetime", "--interval", "$Interval", "--stable", "$Stable")
 if ($Depth -gt 0)   { $coachArgs += @("--depth", "$Depth") }
 if ($HashMB -gt 0)  { $coachArgs += @("--hash-mb", "$HashMB") }
@@ -263,6 +269,7 @@ if ($Depth -gt 0) {
 Say "  · 浮窗在屏幕右上角，可拖动，按 Esc 或关闭窗口即停" "White"
 Say "  · 认不准时它显示「识别不确定」，不会乱出招" "White"
 Say "  · 轮对方走时它会说明，不会给出用不上的建议" "White"
+Say "  · 轮次认不出时它先不出招（浮窗写「轮次待定」），等一手落子自动认；急用加 -Turn" "White"
 Say "  · 想临时调参数：改 config\tune.json 保存即可，下一轮生效，不用重启" "White"
 Say "  · 日志在 log\ 下（auto_coach-日期.log 是主日志，coach.err.log 是崩溃时的栈）" "White"
 Say ""

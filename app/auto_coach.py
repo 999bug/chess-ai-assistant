@@ -454,20 +454,37 @@ def fen_of(board, letter):
     return board_to_fen(board, "red" if letter == "R" else "black")
 
 
+# 轮次判不出来时浮窗上那句提示。抽出来是因为"状态机拦不拦"和"浮窗说什么"
+# 必须是同一件事——Reporter 只在状态变化时才写，所以这句话会一直停在浮窗上。
+TURN_PENDING_TEXT = "轮次待定：等一手落子后自动认定（急用可加 --turn red/black）"
+
+
 def resolve_turn(explicit, pos, me):
-    """定下"进场那一刻轮到谁走"，返回 (字头, 说明, 是不是猜的)。
+    """定下"进场那一刻轮到谁走"，返回 (字头, 说明, 是不是没定下来)。
 
     为什么这是个真问题：对局打到一半才打开引擎时没有"上一帧"可比，起点 FEN
     里那个"轮谁走"只能定出来。定错了不会打死引擎（FEN 标注和着法历史同源，
     永远自洽），但会把对方该走的着法当建议给出来——比不给更糟。
-    所以：命令行显式指定 > 从局面推断（被将军的局面能判出来）> 默认我方。
+    所以：命令行显式指定 > 从局面推断（被将军的局面判得出来）> 标准开局
+    （必然是红先）> 认不出来。
+
+    **认不出来时返回的第三个值是 True，上层必须据此先不出招**（2026-09-29 改）。
+    过去这里是"先按我方走算"，于是"对方先手"的情形——我方执黑开局、或者中途
+    进场时正轮到对方——**必然猜错**，会在对方还没落子的时候先算出一手我方的
+    着法，用户照着走就是凭空多走一步。现在改成：先不出招，等一手落子由差分
+    反推轮次（见主循环里 `track.turn_confirmed` 那两个分支），代价是进场后
+    要多等一手才有建议。
     """
     if explicit in ("red", "black"):
         return SIDE_LETTER[explicit], "命令行 --turn 指定", False
     turn, why = rules.guess_turn(pos, me)
     if turn:
         return turn, why, False
-    return me, why + "，先按「我方走」处理", True
+    if dict(pos) == rules.SETUP:
+        # 标准开局（32 子全在原位）只有一种可能：红先。
+        # 这是**推出来的**，不是猜的，所以照常出招。
+        return "R", "标准开局，必然红先", False
+    return me, why, True
 
 
 class MoveTrack:
@@ -481,17 +498,23 @@ class MoveTrack:
     于是"历史第一手归谁"也只能跟着写死。一旦差分把顺序排反（见
     rules.explain_change 里那段说明），引擎就收到"标着红先、却先给黑着法"
     的命令，判 Illegal move 之后**自己退出**。现在轮次是一个真实状态：
-    进场时推断或指定，之后每一手翻一次，FEN 标注和着法历史同源、不可能矛盾。
+    进场时推断或指定（认不出来的话先挂着"待定"、等一手落子由 adopt() 反推），
+    之后每一手翻一次，FEN 标注和着法历史同源、不可能矛盾。
 
     安全第一：每次追加着法都会在本地重放一遍，只有重放结果与当前识别盘面
     完全一致、**且每一步都归该走的那一方**，才接受；一旦对不上就地重置为当前局面。
     丢掉历史顶多少一个信息，把错的历史喂给引擎才是真出事。
     """
 
-    def __init__(self, pos, turn="R", side="red"):
+    def __init__(self, pos, turn="R", side="red", turn_confirmed=True):
         self.side = side                    # 我方颜色（"red"/"black"）
         self.letter = SIDE_LETTER.get(side, "R")
         self.turn = turn                    # 起点局面轮到谁走（"R"/"B"）
+        # 轮次是不是**定下来**了。False 只出现在"进场时认不出轮次"这一种情况
+        # （平静局面 + 非标准开局，见 resolve_turn）：这时 self.turn 只是个占位，
+        # 既不该拿去问引擎（会给出错时机的建议），也不该当差分的约束（那正是猜）。
+        # 等一手落子由 adopt() 反推、confirm_turn() 定案。
+        self.turn_confirmed = turn_confirmed
         self.start_pos = dict(pos)
         self.pos = dict(pos)
         self.moves = []
@@ -509,6 +532,31 @@ class MoveTrack:
         if len(self.moves) % 2 == 0:
             return self.turn
         return other_letter(self.turn)
+
+    def confirm_turn(self, letter):
+        """把轮次定下来（由"这一手是谁走的"反推出来，不是猜的）。"""
+        self.turn = letter
+        self.turn_confirmed = True
+
+    def adopt(self, seq, base):
+        """轮次还没定时，用"这一帧恰好走了一手"反推轮次。返回是否认下来了。
+
+        只接受**恰好一手**：一次动了两处以上时先后顺序本身就是不确定的
+        （见 rules.explain_change 里"顺序也得枚举"那段），顺序一错，推出来的
+        轮次就跟着错——那正是这次要躲开的东西。宁可多等一手。
+
+        base 是这一手之前的那一帧。和本对象持有的局面对不上就不认——不然
+        等于把轮次定在一个自己都没看清的局面上。
+        """
+        if self.turn_confirmed or len(seq) != 1:
+            return False
+        if dict(self.pos) != rules.pieces(base):
+            return False
+        lab = self.pos.get(seq[0][0])
+        if not lab:
+            return False
+        self.confirm_turn(lab[0])
+        return True
 
     def start_fen(self):
         """起点 FEN。轮次字段跟着 self.turn 走，不写死。"""
@@ -575,8 +623,9 @@ def main():
     ap.add_argument("--side", default="red", choices=["red", "black"])
     ap.add_argument("--turn", default="auto", choices=["auto", "red", "black"],
                     help="进场那一刻轮到谁走。默认 auto：从局面推断（被将军的"
-                         "局面判得出来），判不出就按我方走并提示。中途接手且"
-                         "局面平静时，用这个参数直接告诉它更准。")
+                         "局面判得出来），标准开局一律红先；都判不出就**先不出招**，"
+                         "等一手落子后由差分反推。中途接手且局面平静时，"
+                         "用这个参数直接告诉它最省事。")
     ap.add_argument("--movetime", type=int, default=None,
                     help="引擎每步思考毫秒数（默认 1000）")
     ap.add_argument("--depth", type=int, default=None,
@@ -899,55 +948,85 @@ def main():
             warn = ""
             if track is None:
                 # 首帧。中途进场时没有"上一帧"可比，"轮谁走"只能现定：
-                # 命令行 --turn > 从局面推断（被将军的局面判得出来）> 默认我方。
-                turn, why_turn, guessed = resolve_turn(
+                # 命令行 --turn > 从局面推断（被将军的局面判得出来）>
+                # 标准开局必然红先 > 认不出来。
+                turn, why_turn, undecided = resolve_turn(
                     args.turn, rules.pieces(board), my_letter)
-                track = MoveTrack(occ, turn, args.side)
-                print("  起始轮次：{}（{}）".format(side_word(turn), why_turn))
-                log.info("起始轮次 {}｜{}".format(side_word(turn), why_turn))
-                if guessed:
-                    # 猜的就得说清楚：轮次错了，浮窗给的是对方该走的着法，
-                    # 用户至少要能看出来，而不是被蒙在鼓里。
-                    warn = "轮次判不出来，先按「我方走」算；不对请加 --turn 指定"
-                    print("  !! {}".format(warn))
+                track = MoveTrack(occ, turn, args.side, turn_confirmed=not undecided)
+                print("  起始轮次：{}（{}）".format(
+                    "待定" if undecided else side_word(turn), why_turn))
+                log.info("起始轮次 {}｜{}".format(
+                    "待定" if undecided else side_word(turn), why_turn))
+                if undecided:
+                    # 认不出轮次就别装作认得出（见 resolve_turn 的说明）：
+                    # 这一帧不出招，等一手落子由差分反推。浮窗那行字要说清
+                    # "为什么不出招、怎么能更快"，否则用户只会觉得助手坏了。
+                    warn = TURN_PENDING_TEXT
+                    print("  !! {}｜{}".format(warn, why_turn))
             else:
-                prev_turn = track.expect_first()
+                # 轮次还没认下来时，**不拿它当差分的约束**（那正是"猜"那一步），
+                # 改成由这一帧的变化反推。见下面 adopt 那两处。
+                prev_turn = track.expect_first() if track.turn_confirmed else None
                 kind, why, seq = rules.explain_change(
                     last_board, board, tune["max_steps"], first_side=prev_turn)
                 if kind == "reset":
                     print("  检测到新的一局（回到标准开局）")
                     track = MoveTrack(occ, "R", args.side)   # 标准开局红先
                 elif kind in ("one_move", "multi_move"):
-                    if not track.push(seq, occ):
-                        print("  着法历史与当前盘面对不上，已重置为当前局面")
-                    if kind == "multi_move":
-                        print("  {}（两次确认之间走了 {} 步，正常）".format(
-                            why, len(seq)))
+                    ok = True
+                    if prev_turn is None:
+                        ok = track.adopt(seq, last_board)
+                        if ok:
+                            print("  轮次已认定：{}（由这一手反推出来的）".format(
+                                side_word(track.turn)))
+                            log.info("轮次已认定 {}｜{}".format(side_word(track.turn), why))
+                        else:
+                            # 这一帧跨了 2 步以上：先后顺序本身就是不确定的
+                            # （见 rules.explain_change 里"顺序也得枚举"那段），
+                            # 顺序一错推出来的轮次就跟着错。把基准挪到当前帧继续等。
+                            print("  轮次待定：这一帧跨了 {} 步，认不出先后，"
+                                  "等下一次干净的一手".format(len(seq)))
+                            track.reset(occ)
+                    if ok:
+                        if not track.push(seq, occ):
+                            print("  着法历史与当前盘面对不上，已重置为当前局面")
+                        if kind == "multi_move":
+                            print("  {}（两次确认之间走了 {} 步，正常）".format(
+                                why, len(seq)))
                 elif kind == "same":
                     # 两帧一模一样。这不是异常——"识别连续不确定后放手重来"
                     # 会重新确认同一帧——更不能因此把历史清掉。
                     pass
                 else:
-                    # 差分解释不通。最可能的是**进场时轮次猜反了**：换一种轮次
-                    # 再试一次，成立就地纠正；否则才当识别抖动处理。
-                    alt_turn = other_letter(prev_turn)
-                    alt_kind, alt_why, alt_seq = rules.explain_change(
-                        last_board, board, tune["max_steps"], first_side=alt_turn)
-                    if alt_kind in ("one_move", "multi_move"):
-                        text = "起始轮次判错了，已按「{}先走」重新对齐".format(
-                            side_word(alt_turn))
-                        print("  !! {}".format(text))
-                        log.warn(text + "｜" + alt_why)
-                        track = MoveTrack(rules.pieces(last_board), alt_turn, args.side)
-                        track.push(alt_seq, occ)
+                    if prev_turn is None:
+                        # 轮次待定，差分又解释不通：把基准挪到当前帧继续等。
+                        # 这里**不能**顺手按"我方走"认下来——那正是要修掉的东西。
+                        print("  轮次待定：差分也解释不通（{}），"
+                              "等下一次干净的一手".format(why))
+                        track.reset(occ)
                     else:
-                        warn = "识别可能不稳（{}），这一手请自行核对".format(why)
-                        print("  !! 差分异常: {}".format(why))
-                        log.warn("差分异常: {}｜本帧 {}｜上一帧 {}".format(
-                            why, fen_of(board, prev_turn),
-                            fen_of(last_board, prev_turn)))
-                        track = MoveTrack(occ, prev_turn, args.side)
+                        # 差分解释不通。最可能的是**进场时轮次判反了**：换一种轮次
+                        # 再试一次，成立就地纠正；否则才当识别抖动处理。
+                        alt_turn = other_letter(prev_turn)
+                        alt_kind, alt_why, alt_seq = rules.explain_change(
+                            last_board, board, tune["max_steps"], first_side=alt_turn)
+                        if alt_kind in ("one_move", "multi_move"):
+                            text = "起始轮次判错了，已按「{}先走」重新对齐".format(
+                                side_word(alt_turn))
+                            print("  !! {}".format(text))
+                            log.warn(text + "｜" + alt_why)
+                            track = MoveTrack(rules.pieces(last_board), alt_turn, args.side)
+                            track.push(alt_seq, occ)
+                        else:
+                            warn = "识别可能不稳（{}），这一手请自行核对".format(why)
+                            print("  !! 差分异常: {}".format(why))
+                            log.warn("差分异常: {}｜本帧 {}｜上一帧 {}".format(
+                                why, fen_of(board, prev_turn),
+                                fen_of(last_board, prev_turn)))
+                            track = MoveTrack(occ, prev_turn, args.side)
 
+            # 轮次待定时这句 FEN 的轮次字段只是占位（FEN 只有 w/b 两种写法），
+            # 别拿它当事实读——它只用于日志和"识别不确定"的提示。
             fen_now = fen_of(board, track.expect_first())
 
             # 第一次拿到稳定盘面时，严格比一次标准开局。
@@ -977,9 +1056,21 @@ def main():
 
             start_fen, moves = track.position()
 
+            # 轮次还没认下来：**先不出招**（2026-09-29 改）。
+            # 过去这里一律按「我方走」猜，于是"对方先手"的情形——我方执黑开局、
+            # 或者中途进场时正轮到对方——必然猜错：对方还没落子就先算出一手我方
+            # 的着法，用户照着走就是凭空多走一步。宁可等一手（对方走或我走都算），
+            # 让差分把轮次反推出来。**这一条必须排在下面"轮对方走"之前**，
+            # 否则浮窗会显示成"轮对方走"，而那正是我们不知道的事。
+            if not track.turn_confirmed:
+                rep.status(TURN_PENDING_TEXT, last_move)
+                time.sleep(interval)
+                continue
+
             # 轮次检查：只有"轮到我方走"才问引擎。轮到对方时问出来的着法
             # 是对方该走的，我方用不上。过去这里靠"着法历史步数的奇偶"来判，
-            # 现在轮次是真实状态（中途进场也定得出来），直接看它更准。
+            # 现在轮次是真实状态（能推的都推出来了，推不出的上面已经拦下），
+            # 直接看它更准。
             if track.expect_first() != my_letter:
                 rep.status("轮对方走（我方已落子），等对方回招…", last_move)
                 time.sleep(interval)

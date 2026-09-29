@@ -123,11 +123,53 @@ check("重放结果与识别盘面不符时也拒绝", tr2.push([((7, 7), (7, 4)
 check("同样被清空", len(tr2.moves), 0)
 
 print("\n=== 中途进场：轮次推断 ===")
-# 平静局面判不出轮次 -> 交给上层（默认按我方走并提示）
+# 平静局面判不出轮次 -> 交给上层
 check("平静局面判不出轮次", rules.guess_turn(dict(rules.SETUP), "R")[0], None)
-check("判不出时 resolve_turn 回退到我方", A.resolve_turn("auto", dict(rules.SETUP), "R")[0], "R")
-check("判不出时标记为「猜的」", A.resolve_turn("auto", dict(rules.SETUP), "R")[2], True)
-check("显式 --turn 优先，且不算猜", A.resolve_turn("black", dict(rules.SETUP), "R"), ("B", "命令行 --turn 指定", False))
+
+# 标准开局是**推得出来**的：32 子全在原位只可能是红先。所以不算"猜"。
+check("标准开局推得出红先", A.resolve_turn("auto", dict(rules.SETUP), "R")[0], "R")
+check("标准开局不算猜（照常出招）", A.resolve_turn("auto", dict(rules.SETUP), "R")[2], False)
+check("标准开局也照常标红先", A.resolve_turn("auto", dict(rules.SETUP), "B")[:2],
+      ("R", "标准开局，必然红先"))
+
+# 平静 + 非标准开局 -> 认不出，上层必须"先不出招"（2026-09-29 改）。
+# 过去这里是"先按我方走算"，结果"对方先手"时必然猜错、多算一手。
+mid = dict(rules.SETUP)
+mid.pop((7, 7))                                  # 红方少一个炮，显然不是开局
+check("非标准开局 + 平静 -> 认不出轮次", A.resolve_turn("auto", mid, "R")[2], True)
+check("认不出时占位值是我方（但不作数）", A.resolve_turn("auto", mid, "B")[0], "B")
+check("显式 --turn 优先，且不算认不出",
+      A.resolve_turn("black", mid, "R"), ("B", "命令行 --turn 指定", False))
+
+print("\n=== 轮次待定：等一手落子反推（不是猜）===")
+tr_wait = A.MoveTrack(mid, "R", "red", turn_confirmed=False)
+check("待定状态标出来了", tr_wait.turn_confirmed, False)
+# 黑方走了一手 -> 反推"走这一手的是黑方"，轮次定案
+after_black = dict(mid)
+after_black[(2, 6)] = after_black.pop((0, 7))     # 黑马 0,7 -> 2,6
+check("恰好一手时反推成功", tr_wait.adopt([((0, 7), (2, 6))], mid), True)
+check("反推出来后轮次是黑方", tr_wait.turn, "B")
+check("已定案", tr_wait.turn_confirmed, True)
+check("起点那一手归黑方走", tr_wait.expect_first(), "B")
+check("反推的这手能正常入历史", tr_wait.push([((0, 7), (2, 6))], after_black), True)
+check("这一手走完，接下来该轮红方（对方）", tr_wait.expect_first(), "R")
+
+# 跨两步以上：先后顺序本身不确定（黑方子力靠上，行优先会把黑排前面），
+# 顺序错了推出来的轮次也会错 -> 一律不认，宁可多等一手
+tr_multi = A.MoveTrack(mid, "R", "red", turn_confirmed=False)
+check("跨两步时不反推", tr_multi.adopt([((0, 7), (2, 6)), ((7, 1), (7, 4))], mid), False)
+check("不反推就不定案", tr_multi.turn_confirmed, False)
+
+# 基准对不上也不能认（等于把轮次定在一个自己都没看清的局面上）
+tr_base = A.MoveTrack(mid, "R", "red", turn_confirmed=False)
+other = dict(mid)
+other.pop((9, 0))
+check("基准对不上就不反推", tr_base.adopt([((0, 7), (2, 6))], other), False)
+
+# 已经定案的 track 不该被 adopt 改掉（防止调用方顺序写错）
+tr_done = A.MoveTrack(mid, "R", "red")
+check("已定案的不再反推", tr_done.adopt([((0, 7), (2, 6))], mid), False)
+check("已定案轮次不变", tr_done.turn, "R")
 
 # 我方被将军 -> 只可能轮我方走（否则对方上一手就直接吃了）
 check("我方被将军 -> 判出轮我方走",
