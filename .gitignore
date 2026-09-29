@@ -1,0 +1,32 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# 截图产出物
+out/
+*.png
+*.jpg
+
+# 模型与数据集（体积大，用脚本下载）
+models/
+data/
+*.onnx
+*.pt
+
+.env
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# 用户私人便签，不入库
+_note.md
+*.stackdump
+
+# 引擎二进制与模型，体积大，用脚本自行下载
+engine/
+
+# WorkBuddy 会话私有数据，不入库
+.workbuddy/

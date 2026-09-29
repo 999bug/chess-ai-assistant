@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JJ象棋 · 执红开局武器库</title>
+<style>
+  :root{
+    --bg:#16181a;
+    --surface:#1e2124;
+    --surface-2:#23272b;
+    --border:#2f3439;
+    --text:#d8dee3;
+    --muted:#98a1a9;
+    --accent:#c9a227;
+    --red:#d05f45;
+    --blue:#5b9bd5;
+    --green:#7aa860;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+    font-size:15px;
+    line-height:1.75;
+  }
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 24px 96px;display:flex;gap:32px;align-items:flex-start;}
+  nav{
+    width:210px;flex:0 0 210px;position:sticky;top:24px;
+    background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 12px;
+  }
+  nav h2{font-size:12px;letter-spacing:.08em;color:var(--muted);margin:0 0 10px;font-weight:500;text-transform:uppercase;}
+  nav a{display:block;color:var(--text);text-decoration:none;font-size:13.5px;padding:6px 8px;border-radius:5px;line-height:1.5;}
+  nav a:hover{background:var(--surface-2);color:var(--accent);}
+  main{flex:1;min-width:0;}
+  header.top{border-bottom:1px solid var(--border);padding-bottom:20px;margin-bottom:28px;}
+  h1{font-size:24px;font-weight:600;margin:0 0 8px;letter-spacing:.01em;}
+  .sub{color:var(--muted);font-size:14px;margin:0;}
+  h2.sec{font-size:19px;font-weight:600;margin:44px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--border);}
+  h3{font-size:16px;font-weight:600;margin:26px 0 10px;}
+  h4{font-size:14.5px;font-weight:600;margin:18px 0 8px;color:var(--accent);}
+  p{margin:0 0 12px;}
+  ul,ol{margin:0 0 12px;padding-left:22px;}
+  li{margin-bottom:6px;}
+  code{
+    font-family:ui-monospace,"SFMono-Regular",Consolas,monospace;
+    background:var(--surface-2);padding:1px 5px;border-radius:4px;font-size:13px;color:#cfd6dc;
+  }
+  .mv{color:var(--accent);font-weight:600;}
+  .mv-b{color:var(--blue);font-weight:600;}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px 18px;margin:14px 0;}
+  .card.warn{border-left:3px solid var(--accent);}
+  .card.rule{border-left:3px solid var(--red);}
+  .card.ok{border-left:3px solid var(--green);}
+  .card h4{margin-top:0;}
+  .moveline{
+    background:var(--surface-2);border:1px solid var(--border);border-radius:8px;
+    padding:14px 16px;margin:12px 0;font-size:14.5px;line-height:2.1;
+  }
+  .mvrow{display:flex;gap:10px;align-items:baseline;}
+  .mvno{flex:0 0 26px;color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums;}
+  .mvpair{flex:1;display:flex;gap:18px;flex-wrap:wrap;}
+  .mvr, .mvb{flex:1 1 180px;}
+  .why{color:var(--muted);font-size:13px;display:block;line-height:1.6;margin-top:-4px;}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px;}
+  th,td{border:1px solid var(--border);padding:8px 10px;text-align:left;vertical-align:top;}
+  th{background:var(--surface-2);font-weight:600;font-size:13.5px;}
+  td.num{font-variant-numeric:tabular-nums;}
+  .tag{
+    display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:4px;
+    border:1px solid var(--border);color:var(--muted);vertical-align:middle;margin-left:6px;white-space:nowrap;
+  }
+  .tag.probe{border-color:var(--accent);color:var(--accent);}
+  .tag.core{border-color:var(--green);color:var(--green);}
+  .kv{color:var(--muted);font-size:13.5px;}
+  .checklist li{margin-bottom:9px;}
+  details{border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:10px 14px;margin:10px 0;}
+  details summary{cursor:pointer;font-weight:600;font-size:14.5px;outline:none;}
+  details[open] summary{margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--border);}
+  .footnote{color:var(--muted);font-size:13px;border-top:1px solid var(--border);margin-top:40px;padding-top:16px;}
+  @media (max-width:860px){
+    .wrap{flex-direction:column;padding:20px 16px 64px;}
+    nav{width:100%;flex:none;position:static;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<nav>
+  <h2>目录</h2>
+  <a href="#s0">0. 怎么用这份资料</a>
+  <a href="#s1">1. 打人机 AI 的总策略</a>
+  <a href="#s2">2. 主武器 A：五七炮稳控</a>
+  <a href="#s3">3. 主武器 B：五九炮求战</a>
+  <a href="#s4">4. 黑方不走屏风马怎么办</a>
+  <a href="#s5">5. 中局七原则</a>
+  <a href="#s6">6. 必认杀法名录</a>
+  <a href="#s7">7. 开局十忌</a>
+  <a href="#s8">8. 复盘清单</a>
+  <a href="#s9">9. 最终版：实时全盘检测</a>
+</nav>
+
+<main>
+
+<header class="top">
+  <h1>执红开局武器库</h1>
+  <p class="sub">为 JJ象棋 人机对战准备的先手体系 · 第 1 版 · 后续按你的实战逐局补充</p>
+</header>
+
+<section id="s0">
+<h2 class="sec">0. 怎么用这份资料</h2>
+
+<div class="card rule">
+  <h4>三条使用纪律</h4>
+  <ol>
+    <li><strong>只背主线，不背分支。</strong>第 2 章那套五七炮的前 8–10 回合请背到不用想；超过主线之外的变化，别猜，直接发给我，我按局面给你具体的招。</li>
+    <li><strong>理解"为什么"，谱着才会长在你身上。</strong>每条主线后面我都写了红方这一手在干什么。记不住着法没关系，记住意图，你就能自己复现。</li>
+    <li><strong>两周内只用主武器 A。</strong>别今天五七炮、明天过河车、后天飞相。一段时间里把自己钉在一套体系上，你才会遇到重复局面，重复才能形成记忆。</li>
+  </ol>
+</div>
+
+<h3>每次开局的 30 秒流程</h3>
+<div class="card">
+  <ol class="checklist">
+    <li>确认自己是<strong>红方先走</strong>；黑先的话策略完全不同，另行处理。</li>
+    <li>起手 <span class="mv">炮二平五</span>。不要犹豫，不要为了"出其不意"换别的。</li>
+    <li>看黑的应手：<strong>屏风马</strong>（马8进7 / 马2进3）走第 2 章；其他走第 4 章。</li>
+    <li>主线走完之后，用第 5 章的"制定计划四步"接管中局。</li>
+    <li>每盘结束后花 3 分钟过一遍第 8 章的复盘清单，重点是找出<strong>第一个</strong>偏离。</li>
+  </ol>
+</div>
+</section>
+
+<section id="s1">
+<h2 class="sec">1. 打人机 AI 的总策略</h2>
+
+<p>这一章的结论分两类，我明确分开写：<strong>不带标记的是象棋界公认的通用规律</strong>（对所有引擎型对手都成立）；<strong>带「待实测」标记的是针对 JJ 这个具体 AI 的行为判断</strong>，需要你打几局验证，我没有替你编。</p>
+
+<h3>1.1 引擎型对手的四个共性特点</h3>
+
+<div class="card warn">
+  <h4>特点一：它不会累，也不会怕，但它会算错自己看不见的东西</h4>
+  <p>AI 的每一步都是它搜索到边界后的最优解。这意味着<strong>短期的战术（一两步的巧手、飞刀、骗着）几乎无效</strong>——只要在你的搜索范围内它能看到，就不会上当。</p>
+  <p>但它对<strong>超出它搜索深度的长期收益</strong>（10 回合后的兵型优劣、子力位置的结构价值）判断是近似的。所以对付它的核心不是"骗"，而是<strong>把局面导向复杂的、需要长期判断的、没有明确战术解的局面</strong>，让它的短期最优在一个长周期里累积出偏差。</p>
+</div>
+
+<div class="card warn">
+  <h4>特点二：它会毫不犹豫地兑子简化，尤其是低难度</h4>
+  <p>多数引擎在评估接近时会倾向于兑子。这里有个反直觉的点：<strong>不要默认"兑掉就安全"</strong>。兑子消除的是局面的复杂度，而复杂度是弱方（你）唯一的武器。</p>
+  <p>兑子之前必须过一遍第 5 章的"兑子三问"。简单原则：<strong>你在进攻就别兑；你落后就更别兑；只有你子力明显占优时才兑。</strong></p>
+</div>
+
+<div class="card warn">
+  <h4>特点三：它不会主动给你"我失误了"的第二次机会</h4>
+  <p>人输了会心态波动，AI 不会。所以当你抓住它的一个失误时，<strong>必须一次吃干净</strong>。宁可向稳妥方向兑现一个明确的小优势，也不要为了更大的战果而给局面增加它的反击机会。这和打人完全不同——打人可以"再骗一把"，打机器不行。</p>
+</div>
+
+<div class="card warn">
+  <h4>特点四：时间是它唯一的软肋（通用规律，但强度依赖很大）</h4>
+  <p>引擎在快棋下的实际棋力会明显下降。如果 JJ 有 5 分钟快棋场，用它练；但注意这不代表它在快棋里会"犯傻"，只是搜索深度变浅。</p>
+</div>
+
+<h3>1.2 JJ AI 待你实测的观察清单<span class="tag probe">待实测</span></h3>
+
+<p>下面这些我不知道 JJ 的答案，也不猜。你打 5–10 局，边打边记录，答案出来后针对它的弱点定制策略，效果远比套用通用对策好。</p>
+
+<table>
+  <tbody><tr><th style="width:38%">观察项</th><th>怎么试</th></tr>
+  <tr>
+    <td>它的开局弱点在哪</td>
+    <td>故意走一个明显吃亏的开局变化（比如开局阶段连走两步兵），看它能不能抓住。抓不住说明它的评估对这个方向不敏感。</td>
+  </tr>
+  <tr>
+    <td>兑子倾向</td>
+    <td>局面均势时你主动提兑车，看它接受还是回避。倾向兑子的 AI，你就用保持复杂度的方式打它。</td>
+  </tr>
+  <tr>
+    <td>吃子的贪性</td>
+    <td>丢一个小兵给它（假弃），看它吃不吃。这是最经典、也是最值得试探的一项。会吃的 AI 有大量可利用空间。</td>
+  </tr>
+  <tr>
+    <td>它的强度上限</td>
+    <td>从最低难度往上升，记录你能在哪个档稳定赢。把训练难度定在"你赢面约 60%"的那一档——太高了只会记乱的东西，太低了练不到。</td>
+  </tr>
+  <tr>
+    <td>它会不会重复局面</td>
+    <td>如果它在劣势时会主动求和 / 走重复着法，说明它有循环局面处理逻辑，可以利用。</td>
+  </tr>
+</tbody></table>
+
+<h3>1.3 三条铁律</h3>
+<div class="card rule">
+  <ol>
+    <li><strong>不用陷阱（尤其是在 AI 上）。</strong>敢死炮、铁滑车这类弃子局，只对算得较差的 AI 有效。用一个之前先做上面那张表的第三项测试：它在中局会不会贪吃？不会的话，陷阱就是送子。<span class="tag probe">待实测</span></li>
+    <li><strong>士象一定要齐。</strong>这是业余和进阶棋手最明显的差别。你的中路和两翼没有缺口，AI 就没有免费的目标。第 2 章主线里专门安排了补士象的回合，别跳。</li>
+    <li><strong>不要在 AI 擅长的局面里和它拼算力。</strong>乱战、对攻、大开大合的中局，就是它的主场。<strong>结构型局面：两马都活、双车通畅、士象齐整、兵型工整</strong>，是你能长期占便宜的地方。</li>
+  </ol>
+</div>
+</section>
+
+<section id="s2">
+<h2 class="sec">2. 主武器 A：五七炮进三兵（默认武器）<span class="tag core">主线·请背</span></h2>
+
+<p>这是给你的默认武器。它的好处是：<strong>结构极其清晰</strong>，红方每一步都有明确的"我要把这颗子送到哪里"，不需要算复杂的变化；而且它是典型的"稳控型"布局，正好落在第 1 章说的那种 AI 不擅长处理的局面类型里。</p>
+
+<h3>2.1 主线谱着</h3>
+
+<div class="moveline">
+  <div class="mvrow"><div class="mvno">1.</div><div class="mvpair">
+    <div class="mvr"><span class="mv">炮二平五</span><span class="why">架中炮，控制中路，同时给后面的马让出二路</span></div>
+    <div class="mvb"><span class="mv-b">马8进7</span><span class="why">黑跳左马，屏风马的第一步</span></div>
+  </div></div>
+  <div class="mvrow"><div class="mvno">2.</div><div class="mvpair">
+    <div class="mvr"><span class="mv">马二进三</span><span class="why">右马跳出，形成中路+右翼的联动</span></div>
+    <div class="mvb"><span class="mv-b">马2进3</span><span class="why">双正马，屏风马成型</span></div>
+  </div></div>
+  <div class="mvrow"><div class="mvno">3.</div><div class="mvpair">
+    <div class="mvr"><span class="mv">车一平二</span><span class="why">出直车到二路，控制黑方的 8 路（它的左车路线）</span></div>
+    <div class="mvb"><span class="mv-b">车9平8</span><span class="why">黑也出直车，双方都把最强的子拿出来</span></div>
+  </div></div>
+  <div class="mvrow"><div class="mvno">4.</div><div class="mvpair">
+    <div class="mvr"><span class="mv">兵三进一</span><span class="why">活通自己的马路（三路），同时把中线兵留作后续资源</span></div>
+    <div class="mvb"><span class="mv-b">卒3进1</span><span class="why">对挺，双方互相开通马路</span></div>
+  </div></div>
+  <div class="mvrow"><div class="mvno">5.</div><div class="mvpair">
+    <div class="mvr"><span class="mv">马八进九</span><span class="why">左马跳边路出动。九路边马位置虽然偏，但它活了一整条马路，比压在原地好</span></div>
+    <div class="mvb"><span class="mv-b">卒1进1</span><span class="why">黑制你的边马，同时给自己的边车开路</span></div>
+  </div></div>
+  <div class="mvrow"><div class="mvno">6.</div><div class="mvpair">
+    <div class="mvr"><span class="mv">炮八平七</span><span class="why">核心一手：炮走到七路，瞄着黑的 3 路线（它的右翼），这是整个体系的攻击点</span></div>
+    <div class="mvb"><span class="mv-b">马3进2</span><span class="why">黑为了解除压力，把马跳出来，同时封住你的七路炮</span></div>
+  </div></div>
+  <div class="mvrow"><div class="mvno">7.</div><div class="mvpair">
+    <div class="mvr"><span class="mv">车九进一</span><span class="why">横车出动，红方最后一个大子启动</span></div>
+    <div class="mvb"><span class="mv-b">象3进5</span><span class="why">黑补右象，中路开始加固</span></div>
+  </div></div>
+  <div class="mvrow"><div class="mvno">8.</div><div class="mvpair">
+    <div class="mvr"><span class="mv">车九平六</span><span class="why">横车过宫占肋（六路），这是红方接下来所有战术的出发点</span></div>
+    <div class="mvb"><span class="mv-b">士4进5</span><span class="why">黑补右士，阵型基本完成</span></div>
+  </div></div>
+  <div class="mvrow"><div class="mvno">9.</div><div class="mvpair">
+    <div class="mvr"><span class="mv">兵九进一</span><span class="why">兑掉黑的边卒，通车；兑完之后黑棋整体结构会有个小缺口</span></div>
+    <div class="mvb"><span class="mv-b">卒1进1</span><span class="why">接受兑卒</span></div>
+  </div></div>
+</div>
+
+<div class="card ok">
+  <h4>这 9 个回合，红方在干的其实只有四件事</h4>
+  <ul>
+    <li><strong>把大子全拿出来</strong>：双马、双车、一炮到位（第 1–3、5、7、8 回合）</li>
+    <li><strong>定出一个攻击点</strong>：七路炮对着黑的右翼（第 6 回合，这是整个体系的核心）</li>
+    <li><strong>把自己的马路全走活</strong>：兵三进一 + 马八进九（第 4、5 回合）</li>
+    <li><strong>占住肋道</strong>：车九平六（第 8 回合，肋线是进攻车的黄金位置）</li>
+  </ul>
+  <p style="margin-bottom:0">记住这四件事，比记住 9 个回合的着法更重要。忘了某一步具体怎么走时，按这四条补回去，复盘出来通常也不会差太远。</p>
+</div>
+
+<h3>2.2 黑方偏离主线怎么办</h3>
+
+<p>主线之外，黑在第 4 回合最常出现的三种不同选择。处理原则一致：<strong>你没有理解对方意图之前，不要走带攻击性的手，先把自己的结构走完。</strong></p>
+
+<details>
+  <summary>4...炮8进4（左炮封车，压制你的右车）</summary>
+  <p>这是最凶的一路，黑用炮封住你的二路车，不让你过河。</p>
+  <ul>
+    <li>应对思路：<strong>不要绕着它的炮走</strong>，接受封锁，转而发展自己的左翼，先把七路炮体系搭起来。</li>
+    <li>大致路线：走<span class="mv">兵七进一</span>，然后<span class="mv">马八进七</span>、<span class="mv">炮八平九</span>、<span class="mv">车九进一</span>，从左边展开。</li>
+    <li>要点：黑封你车的同时，它自己的左翼是空的，你换边打它，它的封锁就变成了一句空话。</li>
+    <li>这个分支变化不小，遇到了直接把局面发我，我给你具体到下一手的走法。</li>
+  </ul>
+</details>
+
+<details>
+  <summary>4...象3进5 或 4...士4进5（黑先坚守，不抢先手）</summary>
+  <p>黑比较稳，先把自己的形补好。</p>
+  <ul>
+    <li>应对思路：黑愿意慢，你就<strong>更慢</strong>——因为你的七路炮体系一旦成型，它的"慢"就变成了负担。</li>
+    <li>照常走<span class="mv">马八进九</span>、<span class="mv">炮八平七</span>，把第 6–8 回合继续执行完。</li>
+    <li>要点：不要因为它走得慢就心急想直接突破。结构优势要慢慢兑现。</li>
+  </ul>
+</details>
+
+<details>
+  <summary>4...卒1进1（黑挺边卒，准备用边车）</summary>
+  <p>黑也在按部就班地发展。</p>
+  <ul>
+    <li>你可以小幅调整：跳过<span class="mv">兵九进一</span>，改走<span class="mv">马八进七</span>抢先占据中路要点。</li>
+    <li>要点：黑的边卒不是威胁，只是一个发展方向。你正常执行主线就行。</li>
+  </ul>
+</details>
+
+<h3>2.3 进中局之后红方要做什么</h3>
+<div class="card">
+  <ol>
+    <li><strong>盯住黑的右翼。</strong>七路炮加上肋道车，你的一整套子力都在指那个方向。中局的攻击就往那个方向发力。</li>
+    <li><strong>慢慢等它先动。</strong>你已经布完局了，让它先表态。AI 的每一次"表态"都可能成为你的目标。</li>
+    <li><strong>不要急着兑。</strong>这时你的位置优势没法立刻换成子力，兑子只会把优势兑没。</li>
+    <li><strong>兵型是你的耐心。</strong>第 9 回合兑卒之后别停，后续的兵可以用来逼走它的马。</li>
+  </ol>
+</div>
+</section>
+
+<section id="s3">
+<h2 class="sec">3. 主武器 B：五九炮过河车（求战机）</h2>
+
+<p>这套只有在两种情况才用：<strong>（1）你已经练熟 A，想给 AI 换换口味；（2）你想主动创造练中局的复杂局面。</strong>它的对攻性明显更强，AI 会很乐意进这种局面，用之前先确认你在当前难度下有把握。</p>
+
+<h3>3.1 主线谱着</h3>
+
+<div class="moveline">
+  <div class="mvrow"><div class="mvno">1.</div><div class="mvpair">
+    <div class="mvr"><span class="mv">炮二平五</span></div><div class="mvb"><span class="mv-b">马8进7</span></div>
+  </div></div>
+  <div class="mvrow"><div class="mvno">2.</div><div class="mvpair">
+    <div class="mvr"><span class="mv">马二进三</span></div><div class="mvb"><span class="mv-b">卒7进1</span><span class="why">黑先挺卒，准备封车</span></div>
+  </div></div>
+  <div class="mvrow"><div class="mvno">3.</div><div class="mvpair">
+    <div class="mvr"><span class="mv">车一平二</span></div><div class="mvb"><span class="mv-b">车9平8</span></div>
+  </div></div>
+  <div class="mvrow"><div class="mvno">4.</div><div class="mvpair">
+    <div class="mvr"><span class="mv">车二进六</span><span class="why">过河车，直接压进黑方阵地，这是求战的声明</span></div>
+    <div class="mvb"><span class="mv-b">马2进3</span></div>
+  </div></div>
+  <div class="mvrow"><div class="mvno">5.</div><div class="mvpair">
+    <div class="mvr"><span class="mv">兵七进一</span><span class="why">活左马路，同时给黑方一个压力点</span></div>
+    <div class="mvb"><span class="mv-b">炮8平9</span><span class="why">平炮兑车，这是最标准的应法</span></div>
+  </div></div>
+  <div class="mvrow"><div class="mvno">6.</div><div class="mvpair">
+    <div class="mvr"><span class="mv">车二平三</span><span class="why">避兑，车压到三路，继续保持压力</span></div>
+    <div class="mvb"><span class="mv-b">炮9退1</span><span class="why">退炮，准备平 7 打车反扑</span></div>
+  </div></div>
+  <div class="mvrow"><div class="mvno">7.</div><div class="mvpair">
+    <div class="mvr"><span class="mv">马八进七</span><span class="why">左马正出，中路集结</span></div>
+    <div class="mvb"><span class="mv-b">士4进5</span></div>
+  </div></div>
+  <div class="mvrow"><div class="mvno">8.</div><div class="mvpair">
+    <div class="mvr"><span class="mv">炮八平九</span><span class="why">炮走边陲，给九路车让路，同时瞄着边线</span></div>
+    <div class="mvb"><span class="mv-b">炮9平7</span><span class="why">打车，黑开始反击</span></div>
+  </div></div>
+</div>
+
+<div class="card warn">
+  <h4>换这套之前先看清楚</h4>
+  <ul style="margin-bottom:0">
+    <li>第 6 回合黑<span class="mv-b">炮9退1</span>之后，它会有一连串针对你过河车的反击（平 7 打车是最常见的）。你要能提前算到这些，否则第 8 回合之后会很被动。</li>
+    <li>这套的价值在于<strong>练你的中局计算</strong>，不在于赢棋稳定率。用它提分之前先在低难度集训。</li>
+    <li>如果打了三五盘觉得吃力，立刻回到 A。不是你不行，是这套本来就吃计算力。</li>
+  </ul>
+</div>
+</section>
+
+<section id="s4">
+<h2 class="sec">4. 黑方不走屏风马怎么办</h2>
+
+<p>开局第 1 回合之后，如果黑走的不是上述主线里的应手，按下表处理。共同的总原则是那句老话：<strong>我不知道对方要干什么的时候，先把自己的子走好。</strong></p>
+
+<table>
+  <tbody><tr><th style="width:22%">黑的应手</th><th style="width:26%">你的前几步</th><th>要点</th></tr>
+  <tr>
+    <td><span class="mv-b">炮8平5</span><br><span class="kv">顺炮</span></td>
+    <td><span class="mv">马二进三</span>，然后<span class="mv">车一平二</span>出车；黑若兑炮你用车/炮处理</td>
+    <td>顺炮混战极易演化成对攻，AI 很喜欢的局面。关键：<strong>不要比它出得快要比出得稳</strong>，先补好士象再谈攻。中路是主战场，中炮别轻易脱手。</td>
+  </tr>
+  <tr>
+    <td><span class="mv-b">炮2平5</span><br><span class="kv">列炮</span></td>
+    <td><span class="mv">马二进三</span>，<span class="mv">车一平二</span>，发展自己的时候留意它的中路</td>
+    <td>列炮是黑方<strong>主动在中路对拼</strong>。你的中炮会变成它的靶子，别急着兑掉；兑掉中炮通常对你不利（失去主动）。抢先出动子力，让它的对攻缺子力支撑。</td>
+  </tr>
+  <tr>
+    <td><span class="mv-b">马2进3</span>后再<span class="mv-b">炮8平6</span><br><span class="kv">反宫马</span></td>
+    <td><span class="mv">马二进三</span>，<span class="mv">车一平二</span>，<span class="mv">兵七进一</span>，<span class="mv">马八进七</span></td>
+    <td>反宫马是很扎实的布局，它不像屏风马那样工整。<strong>不要把节奏拖得太慢</strong>，想办法在它把士象补起来之前制造压力，否则会进入它喜欢的均势局面。</td>
+  </tr>
+  <tr>
+    <td><span class="mv-b">卒7进1</span><br><span class="kv">先挺卒</span></td>
+    <td><span class="mv">马二进三</span>，<span class="mv">车一平二</span>，照常发展</td>
+    <td>黑只是在调整次序，多数会转回屏风马。你照主线走即可，基本能合流。</td>
+  </tr>
+  <tr>
+    <td><span class="mv-b">象3进5</span> / <span class="mv-b">马2进1</span><br><span class="kv">散手布局</span></td>
+    <td><span class="mv">马二进三</span>，<span class="mv">车一平二</span>，<span class="mv">兵七进一</span>，<span class="mv">马八进七</span></td>
+    <td>黑明显在摆花架子，说明它要走超高/非主流的局。<strong>这是你的机会，但别贪。</strong>规规矩矩出子、占要点，用结构优势自然碾压就行，不需要急着从强攻里找出路。</td>
+  </tr>
+</tbody></table>
+
+<p class="kv">表里给的是前几步和方向，不是完整谱着。走到不认识的地方就停手发我，这是最省时间的做法。</p>
+</section>
+
+<section id="s5">
+<h2 class="sec">5. 中局七原则</h2>
+
+<p>开局结束后，第 2、3 章的内容就用完了。从这里开始靠的是下面这七条。它们是真正决定你胜负对错的东西——第 2 章那套开局能帮你平稳进入中局，这七条才是让你赢的部分。</p>
+
+<h3>5.1 子力价值（先看清楚它们的真实比价）</h3>
+<table>
+  <tbody><tr><th>棋子</th><th>基准价值</th><th>备注</th></tr>
+  <tr><td>车</td><td class="num">9</td><td>绝对主力，价值远超其他子。兑车是最慎重的决定</td></tr>
+  <tr><td>炮</td><td class="num">4.5</td><td>开局和中局很强，因为到处有炮架</td></tr>
+  <tr><td>马</td><td class="num">4</td><td>残局通常强于炮，因为不需要炮架</td></tr>
+  <tr><td>兵（未过河）</td><td class="num">1</td><td>基本不值钱</td></tr>
+  <tr><td>兵（过河）</td><td class="num">2</td><td>价值翻倍还要多，越靠近九宫越贵。过河兵接近底线时常常能顶半辆车用</td></tr>
+  <tr><td>士 / 象</td><td class="num">2</td><td>防守价值远高于这个数字。<strong>缺一个士，对方的马炮攻势会难挡很多</strong></td></tr>
+</tbody></table>
+<p class="kv"><strong>最常用的推论：</strong>用车换马炮（9 换 8.5）通常亏；用车换双马或双炮（9 换 8–9）要算清楚后续；用马换两个兵（4 换 2–4）基本亏，除非换来的是决定性的局面。</p>
+
+<h3>5.2 七条原则</h3>
+
+<div class="card">
+  <h4>一、动手之前，先问"对方这步在干什么"</h4>
+  <p>业余最大的通病是全程只想自己的棋。<strong>对方的每一步都是有意图的</strong>——它在威胁谁、它在掩护谁、它准备往哪儿调子。养成习惯：对手落子后先花 3 秒回答这个问题，再考虑自己走什么。这一个习惯就能让你少丢无数子。</p>
+</div>
+
+<div class="card">
+  <h4>二、兑子三问，缺一不兑</h4>
+  <ol style="margin-bottom:0">
+    <li>兑完之后，<strong>谁剩下的子位置更好</strong>？</li>
+    <li>兑掉的是不是<strong>我正在进攻的那个子</strong>？（是就别兑）</li>
+    <li>兑完之后<strong>我的兵型和士象</strong>会不会变差？</li>
+  </ol>
+</div>
+
+<div class="card">
+  <h4>三、每个子都要有"活路"，优先改善你最没用的那个子</h4>
+  <p>中局开始后，把己方六个大子排一遍序，找出<strong>最没用的那一个</strong>，然后专门给它找位置。业余常见的浪费是：一个马在整个中局蹲在底线没动过、一个炮从来没离开过初始位置。</p>
+</div>
+
+<div class="card">
+  <h4>四、一个计划如果三次没能推进，就换计划</h4>
+  <p>不要一根筋。<strong>AI 不会因为你一直重复某个意图就让你得逞。</strong>连续绕圈产生不了任何东西，只是在消耗自己的步数。发现推进不动，立刻把子力调向另一个方向——通常是对方的第二个弱点。</p>
+</div>
+
+<div class="card">
+  <h4>五、吃掉的子要能跑掉，才算吃到了</h4>
+  <p>每次看到一个"可以吃"的子，先算它吃完后会被什么攻击。业余丢车最常见的情形：贪一个大子，然后自己的车被反吃或者被活捉。</p>
+</div>
+
+<div class="card">
+  <h4>六、优势要兑现得明确，不要"贪大"</h4>
+  <p>领先的时候，把赢的方法变简单：兑掉它的攻击子、简化局面、把优势兑成看得见的子力差。<strong>劣势的时候反过来</strong>：保持复杂度、避免兑子、制造它必须连续答对的局面。</p>
+</div>
+
+<div class="card">
+  <h4>七、己方的将门要干净</h4>
+  <p>中路 和 两肋（四路、六路）是将军的进攻通道。<strong>别让自己的将门前堆着一堆杂子</strong>，尤其是被对方的车控住肋道时，绝大多数杀法都是从这里进来的。</p>
+</div>
+
+<h3>5.3 制定计划的四步（中局卡住的时候走这个）</h3>
+<div class="card ok">
+  <ol class="checklist" style="margin-bottom:0">
+    <li><strong>找对方的弱点。</strong>具体就这几类：孤军深入的子、无人保护的兵、被牵制不能动的子、薄弱的边翼、士象不全的一侧。</li>
+    <li><strong>找自己最差的子。</strong>通常是位置最憋屈的那个。</li>
+    <li><strong>把这个差子往对方弱点那边调。</strong>哪怕要花两三回合。<strong>这一步做完之前不要走别的闲着。</strong></li>
+    <li><strong>没有弱点就造一个。</strong>用兵去逼它、兑一个小子兵改变它的兵型、把子力堆到一侧逼它调防。<strong>AI 在被迫被动调防的时候最容易出现软着。</strong></li>
+  </ol>
+</div>
+</section>
+
+<section id="s6">
+<h2 class="sec">6. 必认杀法名录</h2>
+
+<p>这一节不用背怎么组合，要背的是<strong>怎么认出来</strong>。AI 向你进攻时，你必须能提前一两步看出它在组织什么。下面每一个都是你丢棋前会出现的信号。</p>
+
+<table>
+  <tbody><tr><th style="width:20%">杀法</th><th style="width:34%">构成条件</th><th>你该怎么提前防</th></tr>
+  <tr>
+    <td><strong>马后炮</strong></td>
+    <td>马跳到能将军的位置，炮在马正后方（同一条线）作架</td>
+    <td>对方马炮在同一条线上且你将在那条线上。<strong>提前挪将，或者用子别马腿</strong></td>
+  </tr>
+  <tr>
+    <td><strong>铁门栓</strong></td>
+    <td>中炮镇中路 + 车沉底，你的士把中路堵死</td>
+    <td>它中炮还在 + 它车能到底线。<strong>别同时让中炮和底车存在</strong>，兑掉一个</td>
+  </tr>
+  <tr>
+    <td><strong>双车错</strong></td>
+    <td>两个车交替将军，你的将无处可去</td>
+    <td>它兑了一个车通常就不好用了。<strong>有机会先兑掉一车</strong></td>
+  </tr>
+  <tr>
+    <td><strong>重炮</strong></td>
+    <td>双炮叠在同一条线上对准将</td>
+    <td><strong>中路别空。</strong>中路有子它就叠不起来。士象齐全基本免疫</td>
+  </tr>
+  <tr>
+    <td><strong>闷宫</strong></td>
+    <td>炮借助对方的士当架，将门被完全堵住</td>
+    <td>士别摆得太严实，<strong>给自己的将留一个逃生格</strong></td>
+  </tr>
+  <tr>
+    <td><strong>白脸将</strong></td>
+    <td>两将直接同列对脸（中间无子）</td>
+    <td>最基础的规则，<strong>随时检查两将是否同列</strong></td>
+  </tr>
+  <tr>
+    <td><strong>三子归边</strong></td>
+    <td>车马炮集中攻同一侧，配合运子的连贯性</td>
+    <td>它把子往一边调的时候，<strong>另一侧未必安全</strong>，但你得能在它成型前反击或兑子</td>
+  </tr>
+  <tr>
+    <td><strong>挂角马</strong></td>
+    <td>马跳到九宫角（士位），配合车炮成杀</td>
+    <td>士位别空。<strong>被迫调整防守时，士宁可不动</strong></td>
+  </tr>
+</tbody></table>
+
+<div class="card rule">
+  <h4>防守的唯一实用口令</h4>
+  <p style="margin-bottom:0">形势不对时按这个顺序做：<strong>① 先看自己是不是被将军或将或将被将军（尤其是隐蔽的威胁）→ ② 给将找一个安全格 → ③ 兑掉它最关键的那个攻击子 → ④ 实在不行就用子力自堵要道。</strong>顺序别反，业余最常见的是一上来就想反击，结果被先杀。</p>
+</div>
+</section>
+
+<section id="s7">
+<h2 class="sec">7. 开局十忌</h2>
+
+<p>打人机时，输棋往往不是因为对手高明，而是开局就吃亏了。这十条每一条都能改，改完见效很快。</p>
+
+<ol class="checklist">
+  <li><strong>连走兵/卒。</strong>开局前三回合连挺两次兵，等于把先手拱手让人。每一颗兵的前进一步换不来一个大子的出动。</li>
+  <li><strong>单车冒进。</strong>"一车十子寒"没错，但前提是其余子力能跟上。开局就把车单独冲进对方阵地，通常就是那辆车的终点。</li>
+  <li><strong>只动车，不动马炮。</strong>车的价值最大，但中局末期你会发现自己全是车在跑，马炮还堵在家里。</li>
+  <li><strong>忘记补士象。</strong>中炮对轰的时候，中路不补起来就是给对方送一个免费目标。<strong>士象齐，是业余和进阶者最直观的分界线。</strong></li>
+  <li><strong>过早兑掉自己的中炮。</strong>兑掉通常意味着失去整个布局的主动权，别轻易换。</li>
+  <li><strong>窝心马。</strong>把马跳到九宫中心（自己将的正前方）。它会同时堵死自己的将路和士路，是公认的恶手。<strong>除非你有非常具体的战术目的，否则别走。</strong></li>
+  <li><strong>一个子重复走。</strong>同一个马在开局来回跳三次，等于白送对手三个先手。</li>
+  <li><strong>把好位置让给对方</strong>，比如主动把车撤回底线或者放弃肋道。<strong>肋道（四、六路）是进攻的天然通道，别白送给它。</strong></li>
+  <li><strong>不看对方上一手。</strong>见第 5 章原则一。这是业余丢子最大的单一原因。</li>
+  <li><strong>在没算清的时候就随手兑子或冒险弃子。</strong>AI 不会轻信虚招，算了三成清楚的假弃子基本都变成了真丢。</li>
+</ol>
+</section>
+
+<section id="s8">
+<h2 class="sec">8. 复盘清单</h2>
+
+<p>每盘结束花 3 分钟过一遍，重点是找出<strong>第一个</strong>偏离。别急着找"输在哪一步"——通常输棋的那一步早就注定了。</p>
+
+<ol class="checklist">
+  <li><strong>开局前 10 步，我有没有偏离主线？</strong>偏离了第几步？为什么偏离（是对手走出我没见过的招，还是我自己手痒）？</li>
+  <li><strong>我有没有补齐士象？</strong>如果没补，是在哪一步被拖住的？</li>
+  <li><strong>我的六个大子，有没有一个从头到尾没参与过？</strong>如果有，那是下次必须优先解决的子。</li>
+  <li><strong>我第一次感到"不知道走什么"是第几回合？</strong>那一刻前后的局面截图存下来发我，那就是你真正需要补的课。</li>
+  <li><strong>有没有白拿的子</strong>（对手白送的、或者没被防住的子）？AI 不会连送两次，第一次就要抓住。</li>
+  <li><strong>兑子发生在哪一步，当时过了"兑子三问"吗？</strong>大概率你会发现当时什么都没想。</li>
+  <li><strong>输的时候，对方用的是第 6 章里的哪个杀法？</strong>能认出名字，下次就能提前防。</li>
+</ol>
+
+<div class="card ok">
+  <h4>下一步</h4>
+  <p style="margin-bottom:0">打完 3–5 盘，把<strong>第 4 项的局面</strong>和<strong>第 1.2 节那张观察清单的答案</strong>发我。有了这两样，我就能把"通用策略"改成"针对你打的这个 AI 的具体策略"，中局也可以顺着你的实际棋局往下讲。</p>
+</div>
+</section>
+
+<section id="s9">
+<h2 class="sec">9. 最终版本：实时全盘检测</h2>
+
+<p>前八章解决的是"怎么下"，这一章定的是最终版工具要怎么做。<strong>核心约束已经确定：每一轮都要重新读取整个棋盘，重建完整局面。</strong>这个约束会向下决定所有技术选型，先把它为什么成立讲清楚。</p>
+
+<h3>9.1 为什么必须是全盘重建，而不是差分跟踪</h3>
+
+<p>还有一条更省事的路线叫<strong>差分跟踪</strong>：开局局面是已知的，之后每一帧只找出"哪两个交叉点变了"，从而推出对手走了哪一步。它的成本极低，也是我一开始倾向的方案。但它有一个致命缺陷：</p>
+
+<div class="card rule">
+  <h4>差分跟踪的状态会漂移，而且不可恢复</h4>
+  <ul style="margin-bottom:0">
+    <li>漏掉一帧（你在切换到别的窗口、AI 走了一步你正好没看），整个内部局面就和真实棋盘<strong>永久错位</strong>，后面每一步都跟着错。</li>
+    <li>它要求你从头跟踪，<strong>中途接不上</strong>。想在一盘进行到一半时加入？做不到。想复盘一个残局？做不到。</li>
+    <li>一旦错位，工具没有任何自我校验的能力——它不知道自己错了，还会一本正经地继续给建议。</li>
+  </ul>
+</div>
+
+<p>全盘重建没有这些问题：<strong>每一帧都独立、完整地重读一次棋盘</strong>，不依赖历史，不存在误差累积。漏帧不致命（下一帧就补齐）、能中途接管、能读任意残局、换棋盘皮肤只要重新标定就行。这是稳健性上的<strong>根本差别</strong>，不是"省事 vs 麻烦"的差别。你既然要做，就该走这条。</p>
+
+<h3>9.2 "实时"到底是什么意思</h3>
+
+<p>这里要先把预期对齐，否则很容易做成一个耗电而没用的东西：</p>
+
+<ul>
+  <li><strong>不是</strong>每一帧都跑一次识别。屏幕是 30–60fps，但棋盘每秒的状态变化不到一次。</li>
+  <li><strong>实际做法</strong>：3–5Hz 轮询，并且要求<strong>连续多帧结果完全一致</strong>才确认为新局面。</li>
+  <li>人的感知门槛大约在 300–500ms，这套出来的延迟远低于门槛，<strong>体验上就是实时的</strong>。</li>
+  <li>反过来，每帧都跑是负优化：走子动画、选中高亮、棋子飞行动画中间态都会污染识别结果。多帧确认本来就顺带解决了这个问题。</li>
+</ul>
+
+<h3>9.3 架构：检测为主，差分只做触发器</h3>
+
+<p>注意差分在这里的角色变了——它不再是判定局势的依据，只是一个"该不该跑一次全识别"的开关，成本几乎为零。剩下的校验都交給规则。</p>
+
+<div class="card">
+  <ol class="checklist" style="margin-bottom:0">
+    <li><strong>抓图</strong>　DXGI 桌面复制优先（<code>dxcam</code>），备选 <code>Windows.Graphics.Capture</code>。<span class="tag probe">最先验证</span></li>
+    <li><strong>触发</strong>　相邻帧粗筛，只有棋盘区域发生变化、且连续 N 帧稳定不变时才进入下一步。</li>
+    <li><strong>识别</strong>　对整盘一次性输出棋子的位置与种类（方案见 9.4）。</li>
+    <li><strong>吸附</strong>　标定好的 90 个交叉点坐标上，把识别结果落到最近的交叉点。</li>
+    <li><strong>一致性校验</strong>　把重建出来的局面交给象棋规则做合法性检查。这是全盘方案的真正价值所在。</li>
+    <li><strong>决策</strong>　局面确认稳定后，跑引擎，出建议。</li>
+  </ol>
+</div>
+
+<div class="card ok">
+  <h4>第 5 步是整个方案的质量保证</h4>
+  <p>一个符合规则的局面必须满足：双方各且仅有一个将/帅、每一方的兵都不可能出现在它到不了的位置、每种棋子的数量不超过开局编制、两个将不同列对脸。<strong>任何一条不满足，就说明这一帧识别错了，丢弃它，等下一帧。</strong></p>
+  <p style="margin-bottom:0">差分跟踪永远得不到这个保障——它自始至终不知道自己错了。这也是为什么同样是出错，全盘方案能自愈，差分方案会一路错到底。</p>
+</div>
+
+<h3>9.4 识别方案的取舍：YOLO 还是逐格分类</h3>
+
+<p>这一步有两种做法，各有一个关键弱点，值得先说清楚：</p>
+
+<table>
+  <tbody><tr><th style="width:20%">方案</th><th style="width:30%">优势</th><th>弱点</th></tr>
+  <tr>
+    <td><strong>YOLO<br>目标检测</strong></td>
+    <td>端到端，不需要精确标定；一次前向推理出全部棋子的位置和种类；模型体积小、速度快。</td>
+    <td><strong>会漏检。</strong>而"检测棋盘每一格"这件事要求的是不能有遗漏——少识别一个子，重建出来的局面就是错的。<strong>这是检测类任务和这个需求之间的结构性错配。</strong></td>
+  </tr>
+  <tr>
+    <td><strong>逐格分类<br>90 crop + 分类器</strong></td>
+    <td><strong>结构上完美匹配：</strong>每个交叉点一定输出一个答案（15 类棋子 + 空），天然保证 90 格全有结果，不存在漏检。</td>
+    <td>强依赖 90 点标定的精度；标歪了全盘都偏。90 次推理（可批处理），计算量比单次 YOLO 大。</td>
+  </tr>
+</tbody></table>
+
+<div class="card warn">
+  <h4>我的判断：混合，而不是二选一</h4>
+  <ul style="margin-bottom:0">
+    <li><strong>YOLO 做粗定位</strong>：用来确认棋盘在哪、辅助自动标定、以及做"这一帧有没有明显问题"的快速筛查。</li>
+    <li><strong>逐格分类做最终重建</strong>：90 个格子每个都给答案，交给第 5 步的规则校验。</li>
+    <li>训练数据两个方案可以共用：对着你自己的棋盘截图，<strong>局面已知就等于标签已知</strong>，几百张就能起步。</li>
+  </ul>
+</div>
+
+<h3>9.5 瓶颈排序：最难的往往不是你想的那个</h3>
+
+<ol class="checklist">
+  <li><strong>抓图（最难，也最容易白干）</strong>　JJ 在电脑上是安卓模拟器或微信 PC 小程序窗口，走 GPU 合成层，常规的截屏 API 经常截出纯黑。<span class="tag probe">必须先验证</span></li>
+  <li><strong>训练数据的域差异</strong>　网上现成的数据集不一定匹配你的棋盘皮肤。好在自打标很便宜。</li>
+  <li><strong>90 点标定与透视</strong>　窗口缩放、棋盘旋转都会让标定的坐标失效，需要自动重标定。</li>
+  <li><strong>识别速度</strong>　<strong>最不用担心的</strong>。轻量模型加上 3–5Hz 的节奏，CPU 都够用。</li>
+</ol>
+
+<div class="card ok">
+  <h4>建议的第一步：半天出结论，且暂时不碰 YOLO</h4>
+  <ol class="checklist" style="margin-bottom:0">
+    <li>先只做一件事：<strong>能不能稳定截到 JJ 的窗口</strong>。十几行代码就能试出来。截到是黑屏的话，YOLO 做得再好也没用。</li>
+    <li>截到了，再验证<strong>能不能从截图里稳定算出 90 个交叉点的坐标</strong>。这是逐格分类方案的地基。</li>
+    <li>这两步通了，剩下的都是时间问题。这两步不通，方案要换，而且应该早换。</li>
+  </ol>
+</div>
+
+<p class="kv">这一章是架构，不是开工令。第 1 步我可以立刻做，而且它是只读的——只是截屏存成图片给你看，不碰你的任何文件、不改任何设置。你要说一声我再动。</p>
+</section>
+
+<p class="footnote">
+第 1 版 · 覆盖：开局主线两套、非屏风马应对、中局七原则、杀法名录、开局十忌、复盘清单、最终版架构。<br>
+带「待实测」标记的内容需要你在 JJ 上验证，我没有替你假设答案。后续按你的实战逐局补充，每盘棋讲中局。
+</p>
+
+</main>
+</div>
+
+
+</body></html>
