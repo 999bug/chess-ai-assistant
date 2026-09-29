@@ -55,7 +55,9 @@ import numpy as np
 
 import grid_classify as G
 import rules
-from coach import Engine, board_to_fen, move_to_chinese, move_to_ucci, parse_score
+from applog import get_logger, install_excepthook
+from coach import (Engine, board_to_fen, engine_reason_text, move_to_chinese,
+                   move_to_ucci, parse_score)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)          # 代码在 app/ 下，上一级才是项目根
@@ -96,6 +98,74 @@ def write(payload):
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     os.replace(tmp, OUT_JSON)  # 原子替换，读的一方不会读到半个文件
+
+
+class Reporter:
+    """写 out/suggestion.json（浮窗读它），同时把同一份状态记进日志。
+
+    两件事绑在一起是有意的：浮窗上那行字和日志必须是同一个事实，
+    分成两处写迟早会对不上（"界面明明写着 A，日志里只有 B"最难查）。
+    状态没变就不重复记——日志要能一眼看出"什么时候发生过什么"，
+    被同一句话刷满就白记了。
+    """
+
+    def __init__(self, log):
+        self.log = log
+        self.last = None
+
+    def status(self, status, move=None, level="info", detail=None, exc=None):
+        write({"ts": time.time(), "status": status, "move": move})
+        if status == self.last:
+            return
+        self.last = status
+        if exc is not None:
+            self.log.exception(status, exc)     # 带栈，只在第一次出现时记
+        else:
+            getattr(self.log, level)(status)
+        if detail:
+            getattr(self.log, level)("  " + detail)
+
+
+def ask_engine(eng, start_fen, moves, tune, log, retries=1):
+    """问引擎要一手，失联时先恢复再重问。返回 (着法, info)。
+
+    为什么要分情况重试：只有"进程死了 / 超时没回话"重试才有意义。
+    另外两种重试一百次也是同一个结果，而且都有副作用：
+
+      · 无着可走（bestmove (none)）：引擎好着呢，重问纯属浪费时间
+      · 引擎拒收局面：pikafish 会打印 CRITICAL ERROR 然后**自己退出**，
+        重问等于再打死一次。但这时进程已经没了，**必须重启**——
+        不然从这一手往后每一问都失败，日志上只看到一串"引擎没给着法"。
+    """
+    def ask():
+        if tune["depth"]:
+            return eng.bestmove(start_fen, depth=tune["depth"], moves=moves)
+        return eng.bestmove(start_fen, movetime=tune["movetime"], moves=moves)
+
+    mv, info = ask()
+    if mv or eng.reason in (Engine.NO_MOVE, Engine.INVALID, Engine.EMPTY):
+        if eng.reason == Engine.INVALID:
+            eng.restart("上一问被引擎拒收局面，进程已退出")
+        return mv, info
+
+    for i in range(retries):
+        reason = eng.reason
+        if reason == Engine.TIMEOUT:
+            # bestmove 里已经 stop + isready 拉平过管道，直接重问
+            log.warn("引擎超时，重问一次（FEN {}）".format(start_fen))
+        else:
+            if not eng.restart("提问失败: {}".format(reason)):
+                return None, info
+            log.warn("引擎已重启，重问一次（FEN {}）".format(start_fen))
+        mv, info = ask()
+        if mv:
+            log.info("恢复后拿到着法 {}（第 {} 次重试）".format(mv, i + 1))
+            return mv, info
+        if eng.reason in (Engine.NO_MOVE, Engine.INVALID, Engine.EMPTY):
+            if eng.reason == Engine.INVALID:
+                eng.restart("重试时又被拒收局面")
+            break
+    return None, info
 
 
 def window_rect(hwnd):
@@ -322,14 +392,22 @@ def main():
                     help="关闭在线样本积累（默认开启，仅 template 后端有效）")
     args = ap.parse_args()
 
+    # 日志先立起来：后面所有失败（缺引擎、缺模型、握手不上）都要有地方说话。
+    log = get_logger("auto_coach")
+    install_excepthook(log)
+    log.info("=" * 60)
+    log.info("启动 auto_coach pid={}｜{}".format(os.getpid(), " ".join(sys.argv)))
+
     if not os.path.exists(os.path.join(ROOT, "engine", "pikafish.exe")):
         print("!! 引擎不存在：engine/pikafish.exe")
+        log.error("引擎不存在：engine/pikafish.exe")
         return 1
     if args.backend == "onnx":
         model = os.path.join(ROOT, "models", "layout_nano.onnx")
         if not os.path.exists(model):
             print("!! 整板识别模型不存在：models/layout_nano.onnx")
             print("   运行 python download_models.py 下载（需要能访问 HuggingFace）")
+            log.error("整板识别模型不存在：models/layout_nano.onnx")
             return 1
         # 先把模型加载好。一是加载失败要立刻失败而不是等第一帧，
         # 二是别让第一帧多扛一次一秒多的首次加载
@@ -339,10 +417,12 @@ def main():
             print("整板识别模型已加载")
         except Exception as e:
             print(f"!! 整板识别模型加载失败: {type(e).__name__}: {e}")
+            log.exception("整板识别模型加载失败", e)
             return 1
     else:
         if not os.path.exists(os.path.join(OUT_DIR, "templates.npz")):
             print("!! 模板不存在：先跑 python grid_classify.py --build（画面须为开局）")
+            log.error("模板不存在：out/templates.npz")
             return 1
 
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -361,6 +441,7 @@ def main():
         eng.init()
     except Exception as e:
         print(f"!! 引擎启动失败: {e}")
+        log.exception("引擎启动失败", e)
         return 1
 
     print("引擎就绪：Hash {}MB / Threads {}".format(eng.hash_mb, eng.threads))
@@ -372,6 +453,14 @@ def main():
         print("命令行覆盖：" + "，".join(overridden))
     print("运行期参数见 {}（改了保存下一轮生效，不用重启）".format(
         os.path.relpath(TUNE_PATH, ROOT)))
+    log.info("引擎就绪 Hash {}MB / Threads {}｜识别后端 {}｜执{}方｜{}".format(
+        eng.hash_mb, eng.threads, args.backend,
+        "红" if args.side == "red" else "黑",
+        "固定深度 {}".format(tune["depth"]) if tune["depth"]
+        else "每步思考 {} ms".format(tune["movetime"])))
+    log.info("调参: {}".format(json.dumps(tune.data, ensure_ascii=False)))
+    if overridden:
+        log.info("命令行覆盖: " + "，".join(overridden))
 
     cfg, pts0, cell0 = G.load_layout()
 
@@ -387,7 +476,8 @@ def main():
     still_n = 0            # 画面连续稳定帧数
     last_ts = time.time()  # 上次定案（或启动）的时间，给强行定案兜底用
 
-    write({"ts": time.time(), "status": "启动中…", "move": None})
+    rep = Reporter(log)
+    rep.status("启动中…")
 
     try:
         while True:
@@ -398,6 +488,8 @@ def main():
                       "interval={} stable={}".format(
                           tune["movetime"], tune["depth"], eng.hash_mb, eng.threads,
                           tune["interval"], tune["stable"]))
+                log.info("tune.json 已热更新: {}".format(
+                    json.dumps(tune.data, ensure_ascii=False)))
 
             interval = max(0.02, float(tune["interval"]))
             stable = max(1, int(tune["stable"]))
@@ -407,9 +499,8 @@ def main():
                 w = G.find_window()
                 if not w:
                     hwnd = None
-                    write({"ts": time.time(),
-                           "status": "找不到 JJ象棋 窗口（应用宝失焦会隐藏，把窗口点出来）",
-                           "move": last_move})
+                    rep.status("找不到 JJ象棋 窗口（应用宝失焦会隐藏，把窗口点出来）",
+                               last_move, level="warn")
                     time.sleep(interval)
                     continue
                 hwnd, rect = w[0], w[1]
@@ -422,9 +513,8 @@ def main():
                 img = G.grab(rect)
                 sig = board_signature(img, pts, cell)
             except Exception as e:
-                write({"ts": time.time(),
-                       "status": "抓图出错: {}".format(type(e).__name__),
-                       "move": last_move})
+                rep.status("抓图出错: {}".format(type(e).__name__), last_move,
+                           level="error", exc=e)
                 time.sleep(interval)
                 continue
 
@@ -438,7 +528,7 @@ def main():
             if changed:
                 still_n = 0
                 if last_move is None and not stale:
-                    write({"ts": time.time(), "status": "画面变化中…", "move": None})
+                    rep.status("画面变化中…")
             else:
                 still_n += 1
 
@@ -458,9 +548,8 @@ def main():
             try:
                 board = recognize(args.backend, img, pts, cell)
             except Exception as e:
-                write({"ts": time.time(),
-                       "status": "识别出错: {}".format(type(e).__name__),
-                       "move": last_move})
+                rep.status("识别出错: {}".format(type(e).__name__), last_move,
+                           level="error", exc=e)
                 time.sleep(interval)
                 continue
             sig_done = sig
@@ -469,8 +558,7 @@ def main():
             occ = {k: v[0] for k, v in board.items() if v[0] != "EMPTY"}
 
             if not occ:
-                write({"ts": time.time(),
-                       "status": "画面里没读到棋子（可能还在加载）", "move": last_move})
+                rep.status("画面里没读到棋子（可能还在加载）", last_move)
                 time.sleep(interval)
                 continue
 
@@ -520,14 +608,16 @@ def main():
                 else:
                     warn = "识别可能不稳（{}），这一手请自行核对".format(why)
                     print("  !! 差分异常: {}".format(why))
+                    log.warn("差分异常: {}｜本帧 {}｜上一帧 {}".format(
+                        why, fen_now, board_to_fen(last_board, args.side)))
                     track = MoveTrack(fen_now, occ)
 
             if not ok:
                 bad_n += 1
-                write({"ts": time.time(),
-                       "status": "识别不确定（第 {} 次）：{}".format(
-                           bad_n, "；".join(problems[:2])),
-                       "move": last_move})
+                rep.status("识别不确定（第 {} 次）：{}".format(
+                    bad_n, "；".join(problems[:2])), last_move, level="warn",
+                    detail="全部问题: {}｜FEN {}".format(
+                        "；".join(problems), fen_now))
                 print("  校验未过: " + "；".join(problems[:3]))
                 if bad_n >= 3:
                     last_key = None   # 放手，等下一轮重新确认
@@ -567,24 +657,40 @@ def main():
             # （老版本把 FEN 一律标成"我方走"，这种时刻就会给出一份
             #   基于错误轮次的建议，比不给更糟。）
             if len(moves) % 2 == 1:
-                write({"ts": time.time(),
-                       "status": "轮对方走（我方已落子），等对方回招…",
-                       "move": last_move})
+                rep.status("轮对方走（我方已落子），等对方回招…", last_move)
                 time.sleep(interval)
                 continue
 
-            write({"ts": time.time(),
-                   "status": warn or "识别 {} 子，引擎计算中…".format(len(occ)),
-                   "move": last_move})
+            # ---- 轮次和盘面对不上：这种局面不给引擎 ----
+            # 合法对局里"轮到我走"时对方不可能正被将军（对方被将军就必然
+            # 轮到对方走）。所以只要我方现在就能吃到对方的将，就说明轮次或
+            # 识别有误。实测这种局面喂给 pikafish，它会打印一行 CRITICAL ERROR
+            # 之后**自己退出**，于是后面每一问都失败，日志上只剩一串
+            # "引擎没给着法"——根因被埋掉。先说清楚，别把引擎搞死。
+            bad, why = rules.king_capturable(
+                rules.pieces(board), "R" if args.side == "red" else "B")
+            if bad:
+                text = "局面与轮次不符（{}），已跳过".format(why)
+                log.warn(text + "｜FEN {}｜着法历史 {} 步".format(start_fen, len(moves)))
+                rep.status(text, last_move, level="warn")
+                time.sleep(interval)
+                continue
 
-            if tune["depth"]:
-                mv, info = eng.bestmove(start_fen, depth=tune["depth"], moves=moves)
-            else:
-                mv, info = eng.bestmove(start_fen, movetime=tune["movetime"],
-                                        moves=moves)
+            # 引擎也可能在两问之间就没了（上一问被拒收、被系统杀了、内存不够）。
+            # 不查一下的话，"进程没了"会一路伪装成"局面可能不合法"。
+            if not eng.alive() and not eng.restart("提问前发现引擎已退出"):
+                log.error("引擎重启失败，停止运行")
+                rep.status("引擎起不来（详见 log/ 里的日志）", last_move, level="error")
+                return 1
+
+            rep.status(warn or "识别 {} 子，引擎计算中…".format(len(occ)), last_move)
+            mv, info = ask_engine(eng, start_fen, moves, tune, log)
             if not mv:
-                write({"ts": time.time(), "status": "引擎没给着法（局面可能不合法）",
-                       "move": last_move})
+                text = engine_reason_text(eng)
+                log.warn("出招失败｜{}｜FEN {}｜着法历史 {}".format(
+                    text, start_fen, " ".join(moves) or "（无）"))
+                rep.status(text, last_move, level="warn")
+                time.sleep(interval)
                 continue
 
             sc, d = parse_score(info)
@@ -592,7 +698,12 @@ def main():
             last_move = {"cn": cn, "mv": mv, "score": sc, "depth": d,
                          "fen": fen_now, "n": len(occ),
                          "history": len(track.moves), "movetime": tune["movetime"]}
-            write({"ts": time.time(), "status": warn, "move": last_move})
+            rep.status(warn, last_move)
+            # 每一手都留痕（含完整 FEN）。这是事后复盘"当时它到底看到了什么"的
+            # 唯一凭据——out/suggestion.json 会被下一手覆盖，日志不会。
+            log.info("出招 {} [{}]｜评分 {}｜深度 {}｜{} 子｜历史 {} 步｜{:.2f}s｜FEN {}".format(
+                cn, mv, "无" if sc is None else "{:+.2f}".format(sc / 100), d,
+                len(occ), len(track.moves), time.time() - t0, fen_now))
             print("[{}] {}  [{}]  评分 {:+.2f}  深度 {}  "
                   "({} 子, 历史 {} 步, 本轮 {:.2f}s)".format(
                       time.strftime("%H:%M:%S"), cn, mv,
@@ -604,11 +715,20 @@ def main():
             time.sleep(interval)
     except KeyboardInterrupt:
         print("\n停止")
+        log.info("收到中断，停止")
+    except Exception as e:
+        # 主循环里没预料到的异常，过去会让进程静默退出：浮窗停在上一条状态上，
+        # 日志里干干净净。最难查的就是这种"什么都没留下"的退出。
+        log.exception("主循环异常退出", e)
+        rep.status("内部异常，已退出: {}（详见 log/）".format(type(e).__name__),
+                   last_move, level="error")
+        return 1
     finally:
         try:
             eng.quit()
         except Exception:
             pass
+        log.info("auto_coach 已退出")
     return 0
 
 

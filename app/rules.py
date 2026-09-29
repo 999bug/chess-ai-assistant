@@ -109,6 +109,38 @@ def kings_face(pos):
     return not any(1 for (r, c) in pos if c == col and lo < r < hi)
 
 
+def king_capturable(pos, side):
+    """轮到我方(side)走，但我方已经能吃到对方的将。返回 (是/否, 说明)。
+
+    为什么要单列这一条（2026-09-29 实测）：pikafish 遇到这种局面不是"拒绝出招"，
+    而是打印一行
+        info string CRITICAL ERROR: ... Reason: Unsupported position. King can be captured.
+    然后**自己退出**。引擎一死，后面每一问都失败，而日志上只看得到一串
+    "引擎没给着法"，真正的原因被埋在中间。
+
+    它什么时候会真出现：
+      · 轮次判错——差分异常后着法历史被重置，于是"该对方走"被当成"该我方走"；
+      · 或者识别把某个子放错了位置，凭空多出一个将军。
+    合法对局里它不可能出现：对方被将军，就必然轮到对方走。
+
+    判据和引擎是同一个（都看"对方将是否被我这方攻击"），所以拦它不会误杀
+    任何引擎本来愿意接受的局面——引擎面对它只会自杀，这里只是提前把话说清楚。
+    """
+    rk = next((k for k, v in pos.items() if v == "R帥"), None)
+    bk = next((k for k, v in pos.items() if v == "B將"), None)
+    if rk is None or bk is None:
+        return False, ""                      # 缺将帅的事归静态校验管
+    target, foe = (rk, "R帥") if side == "B" else (bk, "B將")
+    for sq in sorted(k for k, v in pos.items() if v[0] == side and k != target):
+        ok, _ = move_legal(pos, sq, target)
+        if ok:
+            return True, "{}（{}）能吃到 {}".format(pos[sq], sq, foe)
+    if kings_face(pos):
+        # 帅沿纵线"攻击"对方将（飞将），引擎同样判非法
+        return True, "将帅照面（帅沿纵线攻击对方将）"
+    return False, ""
+
+
 def check_start(board):
     """这一局是不是从标准开局开始的。严格比对 32 子摆法。
 

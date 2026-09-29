@@ -225,6 +225,10 @@ Say ""
 
 # ---------- 3. 启动 ----------
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }
+# 日志单独放根目录 log/，不放 out/：out/ 是随时可以清掉的运行产物（截图、建议），
+# 日志要留一段时间用来回溯问题。log/ 已经在 .gitignore 里。
+$LogDir = Join-Path $Proj "log"
+if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
 
 $coachArgs = @("app\auto_coach.py", "--side", $Side, "--backend", $Backend,
                "--movetime", "$Movetime", "--interval", "$Interval", "--stable", "$Stable")
@@ -233,8 +237,8 @@ if ($HashMB -gt 0)  { $coachArgs += @("--hash-mb", "$HashMB") }
 if ($Threads -gt 0) { $coachArgs += @("--threads", "$Threads") }
 if ($NoLearn)       { $coachArgs += "--no-learn" }
 
-$log  = Join-Path $OutDir "coach.log"
-$errl = Join-Path $OutDir "coach.err.log"
+$log  = Join-Path $LogDir "coach.out.log"
+$errl = Join-Path $LogDir "coach.err.log"
 
 Say "启动识别进程（日志: $log）..." "Cyan"
 # 必须带 -u（无缓冲）：Python 的 stdout 重定向到文件时是块缓冲的，
@@ -260,6 +264,7 @@ Say "  · 浮窗在屏幕右上角，可拖动，按 Esc 或关闭窗口即停" 
 Say "  · 认不准时它显示「识别不确定」，不会乱出招" "White"
 Say "  · 轮对方走时它会说明，不会给出用不上的建议" "White"
 Say "  · 想临时调参数：改 config\tune.json 保存即可，下一轮生效，不用重启" "White"
+Say "  · 日志在 log\ 下（auto_coach-日期.log 是主日志，coach.err.log 是崩溃时的栈）" "White"
 Say ""
 Say "（关闭浮窗窗口，这里会自动收尾）" "DarkGray"
 

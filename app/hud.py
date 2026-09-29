@@ -9,11 +9,16 @@
 """
 import json
 import os
+import sys
 import tkinter as tk
+
+from applog import get_logger, install_excepthook
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)          # 代码在 app/ 下，上一级才是项目根
 SRC = os.path.join(ROOT, "out", "suggestion.json")
+
+log = get_logger("hud")
 
 BG = "#16181a"
 FG = "#d8dee3"
@@ -60,6 +65,8 @@ class Hud:
         self.root.bind("<Escape>", lambda e: self.root.destroy())
 
         self.shown_move = None
+        self.last_err = None        # 上一次的读文件错误，用来去重日志
+        self.no_file = False        # 只在第一次"读不到文件"时记一条
 
     def start_move(self, e):
         self.dx, self.dy = e.x, e.y
@@ -74,15 +81,25 @@ class Hud:
             with open(SRC, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except FileNotFoundError:
+            if not self.no_file:
+                self.no_file = True
+                log.info("还没等到 {}（auto_coach 没在跑？）".format(
+                    os.path.relpath(SRC, ROOT)))
             self.lbl_status.config(text="等 auto_coach.py 写出结果…", fg=MUTED)
         except Exception as e:
             self.lbl_status.config(text=f"读取失败: {e}", fg=WARN)
+            if self.last_err != str(e):     # 同一句错误别刷屏
+                self.last_err = str(e)
+                log.exception("读 suggestion.json 失败（{}）".format(
+                    os.path.relpath(SRC, ROOT)), e)
         else:
             mv = data.get("move")
             if mv:
                 sig = (mv.get("cn"), mv.get("score"), mv.get("depth"))
                 if sig != self.shown_move:
                     self.shown_move = sig
+                    log.info("显示: {}  评分 {}  深度 {}".format(
+                        mv.get("cn"), mv.get("score"), mv.get("depth")))
                     self.lbl_move.config(text=mv.get("cn", "?"))
                     sc = mv.get("score")
                     if sc is not None:
@@ -109,4 +126,6 @@ class Hud:
 
 
 if __name__ == "__main__":
+    install_excepthook(log)
+    log.info("浮窗启动 pid={}（Python {}）".format(os.getpid(), sys.version.split()[0]))
     Hud().run()

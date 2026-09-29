@@ -38,7 +38,8 @@ if os.path.exists(path):
     os.remove(path)
 
 t = A.Tune(path)
-check("首次启动写出默认值", t["movetime"], 1000)
+# 3000 是 7c1310f 之后实机标定出来的默认值（那次只改了 DEFAULTS，这里漏掉了）
+check("首次启动写出默认值", t["movetime"], 3000)
 check("文件已生成", os.path.exists(path), True)
 check("没改文件时 reload 返回 False", t.reload(), False)
 
