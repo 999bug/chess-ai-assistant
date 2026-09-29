@@ -57,7 +57,7 @@ import grid_classify as G
 import rules
 from applog import get_logger, install_excepthook
 from coach import (Engine, board_to_fen, engine_reason_text, move_to_chinese,
-                   move_to_ucci, parse_score, ucci_to_rc)
+                   move_to_ucci, parse_score, set_process_priority, ucci_to_rc)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)          # 代码在 app/ 下，上一级才是项目根
@@ -176,6 +176,11 @@ class Reporter:
 def ask_engine(eng, start_fen, moves, tune, log, retries=1):
     """问引擎要一手，失联时先恢复再重问。返回 (着法, info)。
 
+    **同步版本**：调用方会被阻塞到出结果为止。主循环已经不用它了——改走
+    Engine.start/step/take 的异步三件套，好在等待期间继续盯画面（见主循环里
+    `pending` 那一段）。留着它是因为"失败后立刻重问一次"这个行为本身仍然对，
+    测试也在钉它（tests/test_engine_recover.py）。
+
     为什么要分情况重试：只有"进程死了 / 超时没回话"重试才有意义。
     另外两种重试一百次也是同一个结果，而且都有副作用：
 
@@ -213,6 +218,60 @@ def ask_engine(eng, start_fen, moves, tune, log, retries=1):
                 eng.restart("重试时又被拒收局面")
             break
     return None, info
+
+
+def recover_engine(eng, log):
+    """一次提问失败后，把引擎收拾到"下一问还能用"的状态。
+
+    和 ask_engine 的分工：ask_engine 是"收拾完立刻重问一次"，这里只收拾，
+    重不重问交给调用方——异步路径上等到下一轮采样时局面可能已经变了，
+    拿着旧局面重问没有意义。
+
+    只有这几种值得动手：
+      · 拒收局面 / 进程没了 → 进程已经退出，**必须重启**，否则从这一手往后
+                              每一问都失败，日志上只看到一串"引擎没给着法"
+      · 超时               → 引擎其实还在搜，要拉平管道；它稍后吐出的
+                              bestmove 会被下一问当成新局面的答案，那更糟
+      · 无着可走 / 空 bestmove → 引擎好着呢，什么都不用做
+    返回一句能给用户看的话。
+    """
+    reason = eng.reason
+    if reason == Engine.INVALID:
+        eng.restart("上一问被引擎拒收局面，进程已退出")
+    elif reason == Engine.DEAD:
+        eng.restart("引擎进程没了")
+    elif reason == Engine.TIMEOUT:
+        eng.resync("上一问超时，管道里可能还留着它的输出")
+    return engine_reason_text(eng)
+
+
+def emit_suggestion(pending, info, mv, rep, log):
+    """把一手建议写进浮窗和日志，返回挂到浮窗上的那条记录。
+
+    参数全从 pending 里取，**不读当前循环的 board / track**：搜索是异步的，
+    等到结果的那一轮盘面可能已经翻篇，那时再去读当前状态就张冠李戴了。
+    （也正是因为这样，pending 里必须存着出建议所需的全部上下文。）
+    """
+    sc, d = parse_score(info)
+    cn = move_to_chinese(pending["board"], mv)
+    last_move = {"cn": cn, "mv": mv, "score": sc, "depth": d,
+                 "fen": pending["fen_now"], "n": pending["n"],
+                 "history": pending["history"], "movetime": pending["movetime"]}
+    rep.status(pending["warn"], last_move)
+    # 每一手都留痕（含完整 FEN）。这是事后复盘"当时它到底看到了什么"的
+    # 唯一凭据——out/suggestion.json 会被下一手覆盖，日志不会。
+    log.info("出招 {} [{}]｜评分 {}｜深度 {}｜{} 子｜历史 {} 步｜{:.2f}s｜FEN {}".format(
+        cn, mv, "无" if sc is None else "{:+.2f}".format(sc / 100), d,
+        pending["n"], pending["history"], time.time() - pending["t0"],
+        pending["fen_now"]))
+    print("[{}] {}  [{}]  评分 {:+.2f}  深度 {}  "
+          "({} 子, 历史 {} 步, 本轮 {:.2f}s)".format(
+              time.strftime("%H:%M:%S"), cn, mv,
+              sc / 100 if sc is not None else 0, d, pending["n"],
+              pending["history"], time.time() - pending["t0"]))
+    if pending["warn"]:
+        print("  !! {}".format(pending["warn"]))
+    return last_move
 
 
 def window_rect(hwnd):
@@ -521,6 +580,14 @@ def main():
     log.info("=" * 60)
     log.info("启动 auto_coach pid={}｜{}".format(os.getpid(), " ".join(sys.argv)))
 
+    # 识别（ONNX）、引擎、JJ象棋 抢的是同一台机器。默认优先级下游戏一忙，
+    # 识别就可能被排到队尾——表现是"这一手莫名其妙慢了很多"，而且难复现。
+    # 提到 AboveNormal 只是略微优先，不会拖累系统；失败也无所谓，这是优化不是功能。
+    if set_process_priority():
+        log.info("进程优先级已提到 AboveNormal")
+    else:
+        log.info("进程优先级没提上去（非 Windows 或调用失败），不影响功能")
+
     if not os.path.exists(os.path.join(ROOT, "engine", "pikafish.exe")):
         print("!! 引擎不存在：engine/pikafish.exe")
         log.error("引擎不存在：engine/pikafish.exe")
@@ -598,6 +665,7 @@ def main():
     sig_done = None        # 已经定过案的签名
     still_n = 0            # 画面连续稳定帧数
     last_ts = time.time()  # 上次定案（或启动）的时间，给强行定案兜底用
+    pending = None         # 正在进行的一轮搜索（异步）；None = 引擎不在忙
 
     rep = Reporter(log)
     rep.status("启动中…")
@@ -626,6 +694,12 @@ def main():
             # 走进"画面变化中…"分支，"已重置"这句状态才能在浮窗上多停一会儿。
             # sig_done 必须清，否则重置后这张画面会被当成"已经定过案"而跳过。
             if restart_requested():
+                if pending is not None:
+                    # 有搜索在跑就先停掉。不停的话它稍后吐出的 bestmove 会留在
+                    # 管道里，被下一问当成新局面的答案——照着错的建议走棋，
+                    # 比不给建议更糟。
+                    eng.resync("手工重置，放弃进行中的搜索")
+                    pending = None
                 track = None          # 着法历史 + 轮次，会重新走"首帧"那套推断
                 last_board = None     # 差分基准
                 last_key = None       # 去重用的标签快照
@@ -679,6 +753,51 @@ def main():
                     rep.status("画面变化中…")
             else:
                 still_n += 1
+
+            # ---- 异步搜索进行中：一边等引擎，一边继续盯画面 ----
+            # 必须放在稳定判定之前：画面没变时下面那个"已经定过案"的分支会
+            # 直接 continue，搜索就永远推进不到头。
+            if pending is not None:
+                if changed:
+                    # 画面变了 = 这一问问的是已经不存在的局面，停掉重来。
+                    # 这正是异步的全部意义：串行时得等这次搜索跑完，才会发现
+                    # 局面早就变了，那几秒纯属白搜。
+                    eng.resync("画面变化，放弃进行中的搜索")
+                    log.info("画面变化，放弃进行中的搜索｜FEN {}｜已搜 {:.1f}s".format(
+                        pending["start_fen"], time.time() - pending["go_ts"]))
+                    pending = None
+                    rep.status("画面变化，重新识别…", last_move)
+                    time.sleep(interval)
+                    continue
+
+                if eng.step():                 # 非阻塞：拿到 bestmove 才算完
+                    mv, info = eng.take()
+                    if mv:
+                        last_move = emit_suggestion(pending, info, mv, rep, log)
+                    else:
+                        text = recover_engine(eng, log)
+                        log.warn("出招失败｜{}｜FEN {}｜着法历史 {}".format(
+                            text, pending["start_fen"],
+                            " ".join(pending["moves"]) or "（无）"))
+                        rep.status(text, last_move, level="warn")
+                    pending = None
+                    time.sleep(interval)
+                    continue
+
+                if eng.expired():
+                    # 兜底：引擎一直不回话。按原因把它收拾回可用的状态，
+                    # 别把一个坏进程留在那儿，让后面每一问都失败。
+                    eng.take()
+                    text = recover_engine(eng, log)
+                    log.warn("出招失败｜{}｜FEN {}".format(
+                        text, pending["start_fen"]))
+                    rep.status(text, last_move, level="warn")
+                    pending = None
+                    time.sleep(interval)
+                    continue
+
+                time.sleep(interval)
+                continue
 
             if still_n < stable and not stale:
                 time.sleep(interval)
@@ -880,34 +999,25 @@ def main():
                 return 1
 
             rep.status(warn or "识别 {} 子，引擎计算中…".format(len(occ)), last_move)
-            mv, info = ask_engine(eng, start_fen, moves, tune, log)
-            if not mv:
-                text = engine_reason_text(eng)
-                log.warn("出招失败｜{}｜FEN {}｜着法历史 {}".format(
-                    text, start_fen, " ".join(moves) or "（无）"))
+            # 只发起、不等待，然后立刻回到循环顶部。这一手要算几秒，而这几秒
+            # 主循环会继续抓图：对手要是抢先落子，下一轮就能把这次搜索取消掉，
+            # 而不是像以前那样傻等它跑完，才发现局面早就变了。
+            # pending 里把"出建议时要用到的东西"全部带上——等到结果的那一轮
+            # 盘面可能已经翻篇，那时再回头读 board / track 就晚了。
+            if not eng.start(start_fen, depth=tune["depth"],
+                             movetime=tune["movetime"], moves=moves):
+                # 命令没送进引擎（进程刚死 / 管道断了）。**不能**把它挂成
+                # pending——那样要白等 20 秒的兜底超时才有人收拾，这一手还出不来。
+                text = recover_engine(eng, log)
+                log.warn("发起搜索失败｜{}｜FEN {}".format(text, start_fen))
                 rep.status(text, last_move, level="warn")
                 time.sleep(interval)
                 continue
-
-            sc, d = parse_score(info)
-            cn = move_to_chinese(board, mv)
-            last_move = {"cn": cn, "mv": mv, "score": sc, "depth": d,
-                         "fen": fen_now, "n": len(occ),
-                         "history": len(track.moves), "movetime": tune["movetime"]}
-            rep.status(warn, last_move)
-            # 每一手都留痕（含完整 FEN）。这是事后复盘"当时它到底看到了什么"的
-            # 唯一凭据——out/suggestion.json 会被下一手覆盖，日志不会。
-            log.info("出招 {} [{}]｜评分 {}｜深度 {}｜{} 子｜历史 {} 步｜{:.2f}s｜FEN {}".format(
-                cn, mv, "无" if sc is None else "{:+.2f}".format(sc / 100), d,
-                len(occ), len(track.moves), time.time() - t0, fen_now))
-            print("[{}] {}  [{}]  评分 {:+.2f}  深度 {}  "
-                  "({} 子, 历史 {} 步, 本轮 {:.2f}s)".format(
-                      time.strftime("%H:%M:%S"), cn, mv,
-                      sc / 100 if sc is not None else 0, d, len(occ),
-                      len(track.moves), time.time() - t0))
-            if warn:
-                print("  !! {}".format(warn))
-
+            pending = {"t0": t0, "go_ts": time.time(),
+                       "start_fen": start_fen, "fen_now": fen_now,
+                       "moves": list(moves), "board": board, "n": len(occ),
+                       "warn": warn, "history": len(track.moves),
+                       "movetime": tune["movetime"]}
             time.sleep(interval)
     except KeyboardInterrupt:
         print("\n停止")

@@ -49,6 +49,53 @@ def default_threads():
     """
     return max(1, min((os.cpu_count() or 4) // 2, 8))
 
+
+# Windows 的进程优先级常量。取字面值而不是 subprocess.ABOVE_NORMAL_PRIORITY_CLASS，
+# 是因为后者只在 Windows 上定义，写死一个常量能让非 Windows 上的导入也顺利通过。
+ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
+NORMAL_PRIORITY_CLASS = 0x00000020
+
+
+def engine_creation_flags():
+    """起引擎进程时用的创建标志：Windows 下给它 AboveNormal 优先级。
+
+    为什么：识别（ONNX）、引擎、和 JJ象棋 抢的是同一台机器。默认优先级下
+    游戏一忙，引擎就可能被排到后面——表现是"这一手莫名其妙慢了很多"。
+    AboveNormal 只是略微优先，不会拖累系统（HIGH/REALTIME 才会）。
+    非 Windows 或拿不到常量时返回 0，等于没加，不影响功能。
+    """
+    if os.name != "nt":
+        return 0
+    return getattr(subprocess, "ABOVE_NORMAL_PRIORITY_CLASS", 0)
+
+
+def set_process_priority(above_normal=True):
+    """把**当前进程**提到 AboveNormal（Windows）。失败就算了——这是优化不是功能。
+
+    和 engine_creation_flags() 是一对：引擎是子进程，在 Popen 时用 flags 提；
+    识别跑在本进程里，只能自己调 SetPriorityClass。
+
+    踩过的坑：**必须显式声明 argtypes / restype**。ctypes 默认把返回值当
+    c_int，而 GetCurrentProcess() 返回的伪句柄是 -1（64 位下 0xFFFF…FFFF），
+    截成 32 位之后 SetPriorityClass 拿到的是一个无效句柄，直接返回 0 失败——
+    表面上看代码毫无问题，只是"悄悄没生效"（实测时就栽在这儿）。
+    """
+    if os.name != "nt":
+        return False
+    try:
+        from ctypes import wintypes
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.GetCurrentProcess.argtypes = []
+        k.GetCurrentProcess.restype = wintypes.HANDLE
+        k.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        k.SetPriorityClass.restype = wintypes.BOOL
+        cls = (ABOVE_NORMAL_PRIORITY_CLASS if above_normal
+               else NORMAL_PRIORITY_CLASS)
+        return bool(k.SetPriorityClass(k.GetCurrentProcess(), cls))
+    except Exception:
+        return False
+
+
 # 识别标签 -> FEN 字母（大写红、小写黑）
 FEN_MAP = {
     ("B", "車"): "r", ("B", "馬"): "n", ("B", "象"): "b", ("B", "士"): "a",
@@ -206,6 +253,15 @@ class Engine:
         self.q = None
         self.p = None
         self.eof = False            # 输出流已经读到结尾 = 引擎没了（见 alive()）
+
+        # 异步搜索的状态（见 start / step / take）：主循环用它，
+        # 好在等引擎出招的同时还能继续盯画面。
+        self._lines = []            # 本次搜索收到的所有输出行
+        self._found = False         # 是否已经收到 bestmove
+        self._sent = False          # 命令是否成功送进引擎
+        self._deadline = None       # 兜底超时时刻（不是引擎自己的预算）
+        self._fen = ""              # 本次搜索的局面，只用于写日志
+
         self.spawn()
 
     # ---------- 进程与管道 ----------
@@ -216,7 +272,8 @@ class Engine:
                                   stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                   text=True, bufsize=1,
-                                  encoding="utf-8", errors="replace")
+                                  encoding="utf-8", errors="replace",
+                                  creationflags=engine_creation_flags())
         self.q = queue.Queue()
         threading.Thread(target=self._pump, daemon=True).start()
         self.log.info("引擎进程已启动 pid={}".format(self.p.pid))
@@ -407,8 +464,141 @@ class Engine:
             self.log.warn("下发引擎选项后没等到 readyok")
         return found
 
+    # ---------- 异步搜索：发起 / 推进 / 取回 ----------
+    # 为什么拆成三件套：主循环等引擎出招的那几秒里原本是**完全瞎的**——
+    # 它阻塞在 read_until 上，既不抓图也不看画面。对手要是在这几秒里落了子，
+    # 得等这次搜索跑完才发现局面已经变了，那几秒纯属白搜。
+    # 拆开之后主循环可以一边等一边继续盯画面，画面一变就取消重来。
+    #
+    # 约法一章：**同一时刻只有一个人碰引擎**。read_until / step 都是从这个
+    # 队列取行的，两边同时读会互相偷行，把上一个局面的输出当成新局面的
+    # 答案——那比不给答案更糟（会照着错的建议走棋）。
+
+    def start(self, fen, depth=None, movetime=None, moves=None):
+        """发起一次搜索后立刻返回（不阻塞）。之后用 step() 推进、take() 取回。
+
+        返回 False = 命令没送进引擎（进程已死或管道异常），此时 reason 已经
+        写好，直接 take() 就能拿到结果。
+        """
+        self.reason, self.diag = None, []
+        self._lines, self._found, self._sent = [], False, False
+        self._fen = fen
+        self._deadline = None
+
+        if not self.alive():
+            self.reason = self.DEAD
+            self.log.warn("提问时引擎已经不在了（退出码 {}）｜FEN {}".format(
+                self.exit_code(), fen))
+            return False
+
+        if moves:
+            pos_cmd = "position fen {} moves {}".format(fen, " ".join(moves))
+        else:
+            pos_cmd = "position fen {}".format(fen)
+
+        # deadline 只是"万一引擎不回话"的兜底，给得比 movetime 宽得多：
+        # 这一问本该花多久由引擎自己按 movetime 控制，判早了会白丢一手。
+        if movetime:
+            cmd = "go movetime {}".format(int(movetime))
+            self._deadline = time.time() + max(20.0, int(movetime) / 1000.0 * 10)
+        elif depth:
+            cmd = "go depth {}".format(int(depth))
+            self._deadline = time.time() + 60.0
+        else:
+            cmd = "go movetime 1000"
+            self._deadline = time.time() + 20.0
+
+        # 引擎可能在解析 position 的时候就自杀了（拒收局面就是）。所以即使
+        # go 发不出去，剩下的话也要读完——那行 CRITICAL ERROR 里有"为什么"。
+        self._sent = self.send(pos_cmd) and self.send(cmd)
+        if not self._sent:
+            self.step(0.6)
+        return self._sent
+
+    def step(self, timeout=0.0):
+        """推进搜索：收一批引擎输出。返回 True = 已经拿到 bestmove。
+
+        timeout=0 是非阻塞轮询——主循环每轮采样顺手调一次，没出结果就返回
+        False，画面该抓还是抓。拿到 bestmove 立刻返回，不会为了凑满
+        timeout 干等。
+        """
+        if self._found:
+            return True
+        end = time.time() + max(0.0, timeout)
+        while True:
+            left = end - time.time()
+            try:
+                line = self.q.get(timeout=left) if left > 0 else self.q.get_nowait()
+            except queue.Empty:
+                return False
+            if line is None:            # EOF：引擎没了
+                self.q.put(None)        # 哨兵放回去，后面的调用立刻就知道
+                return False
+            self._lines.append(line)
+            if line.startswith("bestmove"):
+                self._found = True
+                return True
+
+    def expired(self):
+        """这次搜索是否已经超过兜底预算。"""
+        return self._deadline is not None and time.time() > self._deadline
+
+    def take(self):
+        """取回 (着法, info 行列表)，并写下 self.reason。
+
+        判定顺序与重构前的 bestmove() 逐字一致：引擎自己抱怨的 CRITICAL ERROR
+        优先，其次进程没了，再次命令没送出去，最后才是"活着但不理人"。
+        """
+        info = [l for l in self._lines if l.startswith("info")]
+        self.diag = [l for l in info if l.startswith("info string")]
+
+        if not self._found:
+            why = self.critical()
+            if why:
+                # 引擎自己说了为什么（一般是拒收局面），这比我们的推断可靠
+                self.reason = self.INVALID
+                self.log.error("引擎拒收该局面并退出：{}｜FEN {}".format(
+                    why, self._fen))
+            elif not self.alive():
+                self.reason = self.DEAD
+                self.log.error("引擎在回答前退出（退出码 {}）｜FEN {}｜末尾输出: {}".format(
+                    self.exit_code(wait=1.0), self._fen,
+                    " / ".join(self._lines[-3:]) or "无"))
+            elif not self._sent:
+                # 进程还在，但命令已经写不进去了：管道状态不可信，别硬等
+                self.reason = self.DEAD
+                self.log.warn("命令没能送进引擎（管道异常）｜FEN {}".format(self._fen))
+            else:
+                self.reason = self.TIMEOUT
+                self.log.warn("引擎没在预算内回话（还活着）｜FEN {}".format(self._fen))
+            return None, info
+
+        mv = None
+        for line in self._lines:
+            if line.startswith("bestmove"):
+                parts = line.split()
+                mv = parts[1] if len(parts) > 1 else None
+                break
+
+        if mv in ("(none)", "0000"):
+            # 引擎明确告诉你"这盘没棋可走了"（绝杀/困毙），不是它出故障
+            self.reason = self.NO_MOVE
+            self.log.info("引擎判无着可走（{}）｜FEN {}".format(mv, self._fen))
+            return None, info
+        if not mv:
+            self.reason = self.EMPTY
+            self.log.warn("引擎回了空的 bestmove 行｜FEN {}".format(self._fen))
+            return None, info
+
+        if not self.alive():
+            self.log.warn("引擎给出着法后立刻退出（退出码 {}）".format(self.exit_code()))
+        return mv, info
+
     def bestmove(self, fen, depth=None, movetime=None, moves=None, budget=None):
-        """问引擎要一手。返回 (着法, info 行列表)。
+        """问引擎要一手（阻塞版）：start() -> 循环 step() -> take()。
+
+        主循环请用异步三件套（它能在等待期间继续盯画面），这个同步入口留给
+        一次性脚本和测试。行为与重构前完全一致。
 
         depth / movetime：movetime 优先。**推荐用 movetime**——
         pikafish 的 `go depth N` 是"搜到 N 层就收工"，实测 depth 14 只要
@@ -426,81 +616,30 @@ class Engine:
         无论成败都会写下 self.reason，并把引擎吐的 info string 收进
         self.diag（它拒收局面的原因就在那里）。
         """
-        self.reason, self.diag = None, []
-
-        if not self.alive():
-            self.reason = self.DEAD
-            self.log.warn("提问时引擎已经不在了（退出码 {}）｜FEN {}".format(
-                self.exit_code(), fen))
-            return None, []
-
-        if moves:
-            pos_cmd = "position fen {} moves {}".format(fen, " ".join(moves))
-        else:
-            pos_cmd = "position fen {}".format(fen)
-
-        if movetime:
-            cmd, wait = "go movetime {}".format(int(movetime)), \
-                max(20.0, int(movetime) / 1000.0 * 10)
-        elif depth:
-            cmd, wait = "go depth {}".format(int(depth)), 60.0
-        else:
-            cmd, wait = "go movetime 1000", 20.0
-        if budget is not None:
-            wait = float(budget)
-
-        # 引擎可能在后一条命令上就已经死了（拒收局面的引擎是在解析 position
-        # 的时候就自杀了）。所以即使 go 发不出去，也要把剩下的话读完——
-        # 它那行 CRITICAL ERROR 里有"为什么拒收"，丢了就只能瞎猜。
-        sent = self.send(pos_cmd) and self.send(cmd)
-
         t0 = time.time()
-        found, lines = self.read_until("bestmove", wait if sent else 0.6)
-        info = [l for l in lines if l.startswith("info")]
-        self.diag = [l for l in info if l.startswith("info string")]
-        self.log.debug("提问 {}｜着法历史 {} 步｜{:.2f}s｜{}行输出".format(
-            fen, len(moves or []), time.time() - t0, len(lines)))
+        self.start(fen, depth=depth, movetime=movetime, moves=moves)
 
-        if not found:
-            why = self.critical()
-            if why:
-                # 引擎自己说了为什么（一般是拒收局面），这比我们的推断可靠
-                self.reason = self.INVALID
-                self.log.error("引擎拒收该局面并退出：{}｜FEN {}".format(why, fen))
-            elif not self.alive():
-                self.reason = self.DEAD
-                self.log.error("引擎在回答前退出（退出码 {}）｜FEN {}｜末尾输出: {}".format(
-                    self.exit_code(wait=1.0), fen, " / ".join(lines[-3:]) or "无"))
-            elif not sent:
-                # 进程还在，但命令已经写不进去了：管道状态不可信，别硬等
-                self.reason = self.DEAD
-                self.log.warn("命令没能送进引擎（管道异常）｜FEN {}".format(fen))
-            else:
-                self.reason = self.TIMEOUT
-                self.log.warn("引擎 {:.0f}s 内没回话（还活着），拉平管道防错位｜FEN {}".format(
-                    wait, fen))
-                self.resync("提问超时")
-            return None, info
+        if budget is not None:
+            end = t0 + float(budget)
+        elif self._deadline is not None:
+            end = self._deadline
+        else:
+            end = t0 + 20.0
 
-        mv = None
-        for line in lines:
-            if line.startswith("bestmove"):
-                parts = line.split()
-                mv = parts[1] if len(parts) > 1 else None
+        # 条件里带 alive()：进程已经没了就别干等满预算。这能立刻生效是因为
+        # alive() 把 EOF 也算进去（Windows 上 poll() 有一两秒滞后，只信它会
+        # 把"死了"误判成"超时"，走错恢复分支）。
+        while self.alive() and time.time() < end:
+            if self.step(min(0.25, max(0.0, end - time.time()))):
                 break
 
-        if mv in ("(none)", "0000"):
-            # 引擎明确告诉你"这盘没棋可走了"（绝杀/困毙），不是它出故障
-            self.reason = self.NO_MOVE
-            self.log.info("引擎判无着可走（{}）｜FEN {}".format(mv, fen))
-            return None, info
-        if not mv:
-            self.reason = self.EMPTY
-            self.log.warn("引擎回了空的 bestmove 行｜FEN {}".format(fen))
-            return None, info
-
-        if not self.alive():
-            self.log.warn("引擎给出着法后立刻退出（退出码 {}）".format(self.exit_code()))
+        mv, info = self.take()
+        self.log.debug("提问 {}｜着法历史 {} 步｜{:.2f}s｜{}行输出".format(
+            fen, len(moves or []), time.time() - t0, len(self._lines)))
+        if self.reason == self.TIMEOUT:
+            # 引擎其实还在搜，它稍后吐出的 bestmove 会被下一次提问当成新局面
+            # 的答案——照着错的建议走棋比不给建议更糟。拉平管道，全丢掉。
+            self.resync("提问超时")
         return mv, info
 
 
