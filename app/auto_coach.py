@@ -958,11 +958,10 @@ def main():
                 log.info("起始轮次 {}｜{}".format(
                     "待定" if undecided else side_word(turn), why_turn))
                 if undecided:
-                    # 认不出轮次就别装作认得出（见 resolve_turn 的说明）：
-                    # 这一帧不出招，等一手落子由差分反推。浮窗那行字要说清
-                    # "为什么不出招、怎么能更快"，否则用户只会觉得助手坏了。
-                    warn = TURN_PENDING_TEXT
-                    print("  !! {}｜{}".format(warn, why_turn))
+                    # 认不出轮次就别装作认得出（见 resolve_turn 的说明）：这一帧
+                    # 不出招，等一手落子由差分反推。浮窗上那行字由下面那道门写
+                    # （TURN_PENDING_TEXT，只有那一处），这里只解释为什么。
+                    print("  !! {}｜{}".format(TURN_PENDING_TEXT, why_turn))
             else:
                 # 轮次还没认下来时，**不拿它当差分的约束**（那正是"猜"那一步），
                 # 改成由这一帧的变化反推。见下面 adopt 那两处。
@@ -1038,8 +1037,9 @@ def main():
                 if ok_start:
                     print("  起始盘面：标准开局 32 子")
                 else:
-                    # 接在中途进场的"轮次是猜的"后面，别把它顶掉——
-                    # 中途接手正好两条会同时出现，而轮次那条更要紧。
+                    # 中途接手正好两条会同时出现（轮次待定 + 非标准开局），
+                    # 而轮次那条更要紧、也是唯一可操作的那条：轮次待定会由下面的门
+                    # 写成浮窗状态，这条只进 stdout/日志，别去争那行字。
                     text = "起始盘面不是标准开局（{}），若是中途接手请忽略".format(
                         "；".join(start_probs[:1]))
                     warn = warn + "；" + text if warn else text
