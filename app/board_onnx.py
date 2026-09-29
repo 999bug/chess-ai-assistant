@@ -67,6 +67,13 @@ INPUT_SIZE = (280, 315)    # 网络输入 (宽, 高)，正好 35px 一格
 MEAN = np.array([123.675, 116.28, 103.53], dtype=np.float32)
 STD = np.array([58.395, 57.12, 57.375], dtype=np.float32)
 
+# 行号镜像用的重排索引（i = 行*9+列，映射到 (9-行)*9+列）。
+# 是对合，正反都成立。用来把 prob 矩阵一起摆正，和 board 保持同一套行号。
+_FLIP_ORDER = np.array([(9 - i // 9) * 9 + (i % 9) for i in range(90)])
+
+_flip_override = None      # layout.json 里 board.flip 的硬指定：None=自动判断
+_flip_noted = None         # 上一次的朝向，用来避免每帧刷屏
+
 _SESSION = None
 
 
@@ -84,13 +91,68 @@ def session():
 
 
 def load_layout():
+    global _flip_override
     with open(CFG, "r", encoding="utf-8") as f:
         cfg = json.load(f)
     b = cfg["board"]
     pts = b.get("points") or b.get("points_px")
     c0 = b.get("cell") or b.get("cell_px")
     cell = float(c0[0]) if isinstance(c0, (list, tuple)) else float(c0)
+    # 可选的 board.flip：显式钉死朝向。不写就是自动判断（推荐）。
+    _flip_override = b.get("flip")
     return cfg, pts, cell
+
+
+def looks_flipped(board):
+    """识别出来的盘面是不是相对本项目约定上下颠倒了。
+
+    本项目约定 row 0 = 黑方底线、row 9 = 红方底线（rules.SETUP 就是这么摆的）。
+    但 JJ象棋 在执黑视角、或者点了「翻转棋盘」之后会把整盘翻过来显示，
+    那时识别出的行号语义就全反了——红帅跑到 row 0、黑将跑到 row 9。
+    后果不是"稍微不准"，而是 rules.validate 一直报「R帥 在 (0,4) 位置不合法」，
+    守门员永久不放行，助手一局都出不了招（2026-09-29 实测踩到）。
+
+    判据优先用象棋的硬约束：**帅必在 row 7~9、将必在 row 0~2**（九宫），
+    这比按子力重心猜稳得多。将帅都没认出来时才退回重心比较。
+    """
+    rk = bk = None
+    red, black = [], []
+    for (r, _c), (lab, _s) in board.items():
+        if lab.startswith("R"):
+            red.append(r)
+        elif lab.startswith("B"):
+            black.append(r)
+        if lab == "R帥" and rk is None:
+            rk = r
+        elif lab == "B將" and bk is None:
+            bk = r
+
+    if rk is not None and rk <= 4:        # 红帅跑到上半场
+        return True
+    if bk is not None and bk >= 5:        # 黑将跑到下半场
+        return True
+    if rk is not None or bk is not None:
+        return False                      # 认到了将帅，而且都在自己半场
+
+    # 将帅都没认到：退回子力重心（红方整体应该比黑方靠下）
+    if not red or not black:
+        return False
+    return sum(red) / len(red) < sum(black) / len(black)
+
+
+def flip_rows(board):
+    """把盘面上下镜像：行号 r -> 9-r。"""
+    return {(9 - r, c): v for (r, c), v in board.items()}
+
+
+def _note_flip(flipped):
+    """朝向变化时提示一次。每帧都喊会把控制台刷满，只在翻过去的那一刻说一句。"""
+    global _flip_noted
+    if flipped == _flip_noted:
+        return
+    _flip_noted = flipped
+    if flipped:
+        print("  识别到棋盘上下翻转（执黑视角或点了「翻转棋盘」），已自动校正方向")
 
 
 def board_corners(pts):
@@ -149,11 +211,15 @@ def preprocess(warped):
     return np.ascontiguousarray(x, dtype=np.float32)
 
 
-def classify(img, pts, cell=None, return_scores=False):
+def classify(img, pts, cell=None, return_scores=False, flip=None):
     """识别整盘。返回 {(行,列): (标签, 置信度)}。
 
     与 grid_classify.classify 的返回结构一致，可直接替换。
     标签取值：'EMPTY' / 'R帥' / 'B車' / 'UNKNOWN' …
+
+    flip：None = 按画面自动判朝向（默认）；True / False = 强制翻或不翻。
+          不传时也会看 layout.json 里有没有写 board.flip（写了一般就是钉死它）。
+    输出一律是「row 0 = 黑方」的项目约定，调用方不用管棋盘是怎么摆的。
     """
     arr = np.asarray(img.convert("RGB") if hasattr(img, "convert") else img)
     if arr.ndim == 2:
@@ -177,7 +243,20 @@ def classify(img, pts, cell=None, return_scores=False):
         r, c = divmod(i, 9)
         name = CLASSES[idx[i]]
         board[(r, c)] = (LABEL[name], round(float(prob[i, idx[i]]), 4))
+
+    # 朝向：翻转过就整盘镜像回来，让输出永远符合"row 0 = 黑方"的约定。
+    # 不用重跑推理——模型认的是每格棋子的外观，反的只是行号的语义。
+    want = _flip_override if flip is None else flip
+    flipped = looks_flipped(board) if want is None else bool(want)
+    _note_flip(flipped)
+    if flipped:
+        board = flip_rows(board)
+        prob = prob[_FLIP_ORDER]
+
     if return_scores:
+        if flipped:
+            import cv2
+            warped = cv2.flip(warped, 0)   # 拉正图一并摆正，调试图才对得上
         return board, prob, warped
     return board
 
